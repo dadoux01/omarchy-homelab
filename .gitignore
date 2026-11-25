@@ -1,0 +1,4 @@
+# Local test artefacts
+*.bak
+*.tmp
+.DS_Store

@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "id": "dadoux01.homelab",
+  "name": "Homelab",
+  "version": "1.0.0",
+  "author": "dadoux01",
+  "license": "MIT",
+  "description": "Homelab assistant over SSH: hardware monitoring, Docker containers, services (Jellyfin, Home Assistant, Prowlarr, Navidrome), alerts with desktop notifications, update checks, links and a one-click SSH terminal.",
+  "homepage": "https://github.com/dadoux01/omarchy-homelab",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Watcher.qml",
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Homelab",
+    "description": "Hardware monitoring, Docker containers, links and SSH for your homelab hosts.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "language": "English",
+      "configPath": "",
+      "refreshIntervalSec": 10,
+      "secretsPath": "",
+      "notifications": true,
+      "notifyUpdates": true,
+      "backgroundIntervalSec": 120,
+      "updateCheckHours": 6,
+      "diskWarnPercent": 90,
+      "memoryWarnPercent": 95,
+      "temperatureWarnCelsius": 85
+    },
+    "schema": [
+      {
+        "key": "language",
+        "type": "enum",
+        "label": "Language",
+        "options": [
+          "English",
+          "Français"
+        ],
+        "defaultValue": "English",
+        "description": "Language of the Homelab panel."
+      },
+      {
+        "key": "configPath",
+        "type": "path",
+        "label": "Hosts file",
+        "description": "JSON file listing your hosts. Leave empty for ~/.config/omarchy/homelab.json.",
+        "defaultValue": ""
+      },
+      {
+        "key": "secretsPath",
+        "type": "path",
+        "label": "Secrets file",
+        "description": "Where service API keys are stored (mode 600). Leave empty for ~/.config/omarchy/homelab-secrets.json.",
+        "defaultValue": ""
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval while open (seconds)",
+        "min": 3,
+        "max": 600,
+        "step": 1,
+        "defaultValue": 10
+      },
+      {
+        "key": "notifications",
+        "type": "boolean",
+        "label": "Desktop notifications",
+        "description": "Notify when a host goes down, a container stops or crashes, a disk fills up, a service reports a problem, or updates are available.",
+        "defaultValue": true
+      },
+      {
+        "key": "notifyUpdates",
+        "type": "boolean",
+        "label": "Notify about updates",
+        "defaultValue": true
+      },
+      {
+        "key": "backgroundIntervalSec",
+        "type": "integer",
+        "label": "Background check interval (seconds)",
+        "description": "How often hosts are checked while the panel is closed.",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 120
+      },
+      {
+        "key": "updateCheckHours",
+        "type": "integer",
+        "label": "Update check interval (hours)",
+        "description": "Image, package and service update checks. 0 disables automatic checks.",
+        "min": 0,
+        "max": 168,
+        "step": 1,
+        "defaultValue": 6
+      },
+      {
+        "key": "diskWarnPercent",
+        "type": "integer",
+        "label": "Disk alert threshold (%)",
+        "min": 50,
+        "max": 100,
+        "step": 1,
+        "defaultValue": 90
+      },
+      {
+        "key": "memoryWarnPercent",
+        "type": "integer",
+        "label": "Memory alert threshold (%)",
+        "min": 50,
+        "max": 100,
+        "step": 1,
+        "defaultValue": 95
+      },
+      {
+        "key": "temperatureWarnCelsius",
+        "type": "integer",
+        "label": "Temperature alert threshold (°C)",
+        "min": 40,
+        "max": 120,
+        "step": 1,
+        "defaultValue": 85
+      }
+    ]
+  }
+}

@@ -1,0 +1,234 @@
+#!/bin/bash
+# Local helper for the Homelab Omarchy plugin. The QML side calls it with
+# argv arrays only; every value from the hosts file is validated here before
+# it reaches ssh, so nothing is ever interpolated into a local shell.
+#
+#   homelab metrics  <target> <port>
+#   homelab docker   <target> <port>
+#   homelab action   <target> <port> <start|stop|restart> <container>
+#   homelab update   <target> <port> <container>
+#   homelab updates  <target> <port> [all|packages]
+#   homelab os       <target> <port> upgrade                 (opens a terminal, then asks the widget to re-check)
+#   homelab notify   <low|normal|critical> <title> <body> <action-label> <tab>
+#   homelab shell    <target> <port>
+#   homelab logs     <target> <port> <container>
+#   homelab init     <config-path>
+#   homelab api      <secrets> <secret-id> <auth> <GET|POST> <base-url> <path> [insecure] [json-body]
+#   homelab secret-set <secrets> <secret-id>     (one JSON object line on stdin)
+#   homelab secret-del <secrets> <secret-id>
+#   homelab fetch-key  <target> <port> <container> <secrets> <secret-id>   (*arr apps: reads ApiKey from config.xml)
+
+set -o pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+die() { echo "$*" >&2; exit 2; }
+
+cmd=${1:-}
+
+if [[ $cmd == init ]]; then
+  config=${2:-}
+  [[ -n $config ]] || die "missing config path"
+  if [[ ! -e $config ]]; then
+    mkdir -p "$(dirname "$config")" && cp "$here/example.json" "$config" || exit 1
+  fi
+  exec omarchy-launch-editor "$config"
+fi
+
+secret_id_ok() { [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9@._:%/-]{0,199}$ ]]; }
+
+# Writes the secrets file with mode 600 and an atomic rename.
+secrets_write() {
+  local file=$1 filter=$2; shift 2
+  local dir tmp
+  dir=$(dirname "$file")
+  mkdir -p "$dir" || exit 1
+  tmp=$(umask 077 && mktemp "$dir/.homelab-secrets.XXXXXX") || exit 1
+  if [[ -s $file ]]; then
+    jq "$@" "$filter" "$file" >"$tmp" || { rm -f "$tmp"; exit 1; }
+  else
+    jq -n "$@" '{}' | jq "$@" "$filter" >"$tmp" || { rm -f "$tmp"; exit 1; }
+  fi
+  chmod 600 "$tmp" && mv -f "$tmp" "$file"
+}
+
+if [[ $cmd == secret-set ]]; then
+  file=${2:-} id=${3:-}
+  [[ -n $file ]] && secret_id_ok "$id" || die "invalid secret id"
+  IFS= read -r line || die "no secret on stdin"
+  jq -e 'type == "object" and ([.[] | type == "string"] | all)' <<<"$line" >/dev/null 2>&1 || die "secret must be a JSON object of strings"
+  secrets_write "$file" '.[$id] = ((.[$id] // {}) + $value | with_entries(select(.value != "")))' \
+    --arg id "$id" --argjson value "$line"
+  exit 0
+fi
+
+if [[ $cmd == secret-del ]]; then
+  file=${2:-} id=${3:-}
+  [[ -n $file ]] && secret_id_ok "$id" || die "invalid secret id"
+  [[ -s $file ]] || exit 0
+  secrets_write "$file" 'del(.[$id])' --arg id "$id"
+  exit 0
+fi
+
+if [[ $cmd == api ]]; then
+  file=${2:-} id=${3:-} auth=${4:-} method=${5:-} base=${6:-} path=${7:-} insecure=${8:-0} body=${9:-}
+  secret_id_ok "$id" || die "invalid secret id"
+  [[ $auth =~ ^(none|apikey|bearer|mediabrowser|subsonic)$ ]] || die "invalid auth"
+  [[ $method =~ ^(GET|POST)$ ]] || die "invalid method"
+  [[ $base =~ ^https?://[][A-Za-z0-9._:%-]+(/[A-Za-z0-9._~/-]*)?$ ]] || die "invalid url"
+  [[ $path =~ ^/[A-Za-z0-9/_.~?=\&%:,+*-]*$ ]] || die "invalid path"
+
+  field() { [[ -r $file ]] && jq -r --arg id "$id" --arg f "$1" '.[$id][$f] // empty' "$file" 2>/dev/null; }
+  url="${base%/}$path"
+  header=""
+  case $auth in
+    apikey|bearer|mediabrowser)
+      key=$(field apiKey)
+      [[ -n $key ]] || { echo "HTTP 0 missing-secret" >&2; exit 4; }
+      # Tokens are header values: refuse anything that could break out of one.
+      [[ $key =~ ^[A-Za-z0-9._~+/=-]{8,4096}$ ]] || die "invalid key characters"
+      case $auth in
+        apikey) header="X-Api-Key: $key" ;;
+        bearer) header="Authorization: Bearer $key" ;;
+        mediabrowser) header="Authorization: MediaBrowser Client=\\\"Omarchy Homelab\\\", Device=\\\"Omarchy\\\", DeviceId=\\\"omarchy-homelab\\\", Version=\\\"1.0\\\", Token=\\\"$key\\\"" ;;
+      esac
+      ;;
+    subsonic)
+      user=$(field username) pass=$(field password)
+      [[ -n $user && -n $pass ]] || { echo "HTTP 0 missing-secret" >&2; exit 4; }
+      salt=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+      token=$(printf '%s%s' "$pass" "$salt" | md5sum | cut -d' ' -f1)
+      u=$(jq -rn --arg v "$user" '$v | @uri')
+      [[ $url == *\?* ]] && sep='&' || sep='?'
+      url="$url${sep}u=$u&t=$token&s=$salt&v=1.16.1&c=omarchy-homelab&f=json"
+      ;;
+  esac
+
+  # Secrets reach curl through a config on a pipe, never argv.
+  config() {
+    printf 'url = "%s"\n' "$url"
+    [[ -n $header ]] && printf 'header = "%s"\n' "$header"
+    printf 'header = "Accept: application/json"\n'
+    if [[ $method == POST ]]; then
+      printf 'header = "Content-Type: application/json"\n'
+    fi
+  }
+  # Indexer searches fan out to every indexer and can take a while.
+  max_time=15
+  [[ $path == /api/v1/search* ]] && max_time=90
+  args=(-sS --max-time "$max_time" --connect-timeout 5 -X "$method" -w '%{stderr}HTTP %{http_code}\n')
+  [[ $insecure == 1 ]] && args+=(-k)
+  if [[ $method == POST ]]; then
+    printf '%s' "${body:-}" | curl "${args[@]}" -K <(config) --data-binary @- | head -c 8000000
+    status=${PIPESTATUS[1]}
+  else
+    curl "${args[@]}" -K <(config) | head -c 8000000
+    status=${PIPESTATUS[0]}
+  fi
+  exit "$status"
+fi
+
+if [[ $cmd == notify ]]; then
+  urgency=${2:-normal} title=${3:-} body=${4:-} label=${5:-Open} tab=${6:-alerts}
+  [[ $urgency =~ ^(low|normal|critical)$ ]] || die "invalid urgency"
+  [[ $tab =~ ^(monitoring|docker|services|links|alerts)$ ]] || die "invalid tab"
+  # -A waits for the notification to close; only an "open" click acts.
+  reply=$(notify-send -a Homelab -i network-server -u "$urgency" -A "open=$label" -- "$title" "$body" 2>/dev/null)
+  if [[ $reply == open ]]; then
+    omarchy-shell -q dadoux01.homelab open
+    omarchy-shell -q dadoux01.homelab tab "$tab"
+  fi
+  exit 0
+fi
+
+target=${2:-}
+port=${3:-22}
+
+# user@host, host, or an ~/.ssh/config alias. A leading "-" would be read as
+# an ssh option, so the first character must be alphanumeric.
+[[ $target =~ ^[A-Za-z0-9][A-Za-z0-9_.@:%-]*$ ]] || die "invalid ssh target"
+[[ $port =~ ^[0-9]{1,5}$ ]] && (( port > 0 && port < 65536 )) || die "invalid port"
+
+container_ok() { [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; }
+
+# Reuse one connection per host so periodic refreshes don't redo the handshake.
+control="${XDG_RUNTIME_DIR:-/tmp}/omarchy-homelab-%C"
+batch=(-p "$port" -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=10
+  -o ControlMaster=auto -o "ControlPath=$control" -o ControlPersist=120)
+
+terminal() {
+  exec setsid -f xdg-terminal-exec --app-id=org.omarchy.homelab -- "$@"
+}
+
+case $cmd in
+  metrics)
+    exec timeout 20 ssh "${batch[@]}" "$target" 'sh -s' <"$here/remote/metrics.sh"
+    ;;
+  docker)
+    exec timeout 30 ssh "${batch[@]}" "$target" 'sh -s' <"$here/remote/docker.sh"
+    ;;
+  action)
+    action=${4:-}
+    name=${5:-}
+    [[ $action =~ ^(start|stop|restart)$ ]] || die "invalid action"
+    container_ok "$name" || die "invalid container name"
+    { printf 'ACTION=%s\nNAME=%s\n' "$action" "$name"; cat "$here/remote/action.sh"; } \
+      | exec timeout 60 ssh "${batch[@]}" "$target" 'sh -s'
+    ;;
+  update)
+    name=${4:-}
+    container_ok "$name" || die "invalid container name"
+    { printf 'NAME=%s\n' "$name"; cat "$here/remote/update.sh"; } \
+      | exec timeout 900 ssh "${batch[@]}" "$target" 'sh -s'
+    ;;
+  updates)
+    mode=${4:-all}
+    [[ $mode =~ ^(all|packages)$ ]] || die "invalid mode"
+    { printf 'MODE=%s\n' "$mode"; cat "$here/remote/updates.sh"; } \
+      | exec timeout 900 ssh "${batch[@]}" "$target" 'sh -s'
+    ;;
+  os|upgrade-os)
+    mode=${4:-upgrade}
+    [[ $cmd == upgrade-os ]] && mode=upgrade
+    [[ $mode == upgrade ]] || die "invalid mode"
+    terminal "$here/bin/homelab" os-run "$target" "$port" "$mode"
+    ;;
+  os-run)
+    # Runs inside the terminal. The script is copied first and then run with
+    # sh, so the remote login shell (bash, zsh, fish…) does not matter, and
+    # sudo prompts happen here, in plain sight.
+    mode=${4:-}
+    [[ $mode == upgrade ]] || die "invalid mode"
+    remote_file='.cache/omarchy-homelab/upgrade.sh'
+    if ssh "${batch[@]}" "$target" "mkdir -p .cache/omarchy-homelab && cat > $remote_file" <"$here/remote/upgrade.sh"; then
+      ssh -t -p "$port" "$target" sh "$remote_file"
+    else
+      echo "Could not reach $target."
+    fi
+    omarchy-shell -q dadoux01.homelab recheck "$target:$port"
+    printf '\nPress Enter to close'
+    read -r _
+    ;;
+  fetch-key)
+    name=${4:-} file=${5:-} id=${6:-}
+    container_ok "$name" || die "invalid container name"
+    [[ -n $file ]] && secret_id_ok "$id" || die "invalid secret id"
+    xml=$(printf 'N=%s\n%s\n' "$name" 'if docker info >/dev/null 2>&1; then D=docker; else D="sudo -n docker"; fi; $D exec "$N" cat /config/config.xml' \
+      | timeout 20 ssh "${batch[@]}" "$target" 'sh -s') || die "could not read config.xml from $name"
+    key=$(grep -o '<ApiKey>[A-Za-z0-9]*</ApiKey>' <<<"$xml" | head -n1 | sed 's/<[^>]*>//g')
+    [[ ${#key} -ge 16 ]] || die "no ApiKey in $name config.xml"
+    secrets_write "$file" '.[$id] = ((.[$id] // {}) + {apiKey: $key})' --arg id "$id" --arg key "$key"
+    echo ok
+    ;;
+  shell)
+    terminal ssh -p "$port" "$target"
+    ;;
+  logs)
+    name=${4:-}
+    container_ok "$name" || die "invalid container name"
+    terminal ssh -t -p "$port" "$target" "docker logs -f --tail 200 $name || sudo docker logs -f --tail 200 $name"
+    ;;
+  *)
+    die "usage: homelab <metrics|docker|action|shell|logs|init> ..."
+    ;;
+esac

@@ -1,0 +1,1814 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import Quickshell
+import qs.Commons
+import qs.Commons as Commons
+import qs.Ui
+import "Model.js" as Model
+import "Services.js" as Services
+
+// Homelab bar widget: a server glyph in the bar that opens a panel with one
+// tab per concern (Monitoring, Docker, Links) for the selected host, plus a
+// button that opens an SSH session in the default terminal.
+Panel {
+  id: root
+  moduleName: "dadoux01.homelab"
+  ipcTarget: "dadoux01.homelab"
+  manageIpc: false
+
+  readonly property string pluginDir: String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/+$/, "")
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
+  readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
+  readonly property color dim: Qt.darker(foreground, 1.55)
+  readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+  readonly property var fmt: Commons.I18n.formatNumber
+
+  readonly property var tabs: ["monitoring", "docker", "services", "links"]
+
+  // The background watcher (Watcher.qml), loaded once by the shell as this
+  // plugin's service. It may register after the bar, so keep looking.
+  property var watcher: null
+  function findWatcher() {
+    var sh = bar ? bar.shell : null
+    if (sh && typeof sh.serviceFor === "function") watcher = sh.serviceFor("dadoux01.homelab") || null
+  }
+  Timer {
+    interval: 2000
+    repeat: true
+    running: root.watcher === null
+    triggeredOnStart: true
+    onTriggered: root.findWatcher()
+  }
+  readonly property int alertCount: watcher ? watcher.alertCount : 0
+  readonly property int updateCount: watcher ? watcher.updateCount : 0
+
+  // Ticks relative times ("5 min ago") while the panel is open.
+  property double now: Date.now()
+  Timer { interval: 30000; repeat: true; running: root.opened; onTriggered: root.now = Date.now() }
+
+  function ago(ms) {
+    if (!(ms > 0)) return strings.t("time.never")
+    var sec = Math.max(0, (root.now - ms) / 1000)
+    if (sec < 60) return strings.t("time.now")
+    if (sec < 3600) return strings.t("time.minutes").arg(Math.floor(sec / 60))
+    if (sec < 86400) return strings.t("time.hours").arg(Math.floor(sec / 3600))
+    return strings.t("time.days").arg(Math.floor(sec / 86400))
+  }
+
+  function hostByKey(key) {
+    for (var i = 0; i < lab.hosts.length; i++) if (lab.hosts[i].key === key) return lab.hosts[i]
+    return null
+  }
+
+  function goTo(hostKey, tabName) {
+    for (var i = 0; i < lab.hosts.length; i++) if (lab.hosts[i].key === hostKey) lab.selectHost(i)
+    selectTab(tabName)
+  }
+
+  function hasImageUpdate(name) {
+    return watcher !== null && lab.host !== null && watcher.imageUpdateFor(lab.host.key, name)
+  }
+
+  function containerAction(action, name) {
+    if (action === "stop" && watcher && lab.host) watcher.expectStop(lab.host.key, name)
+    lab.containerAction(action, name)
+  }
+
+  function updateAllImages() {
+    if (!watcher) return
+    watcher.updateList.forEach(function(u) {
+      if (u.kind === "image") lab.updateContainer(u.container, hostByKey(u.hostKey))
+    })
+  }
+
+  Connections {
+    target: lab
+    function onContainerUpdated(hostKey, name) { if (root.watcher) root.watcher.containerUpdated(hostKey, name) }
+  }
+  property bool inputFocused: false
+
+  // Docker tab search / filter state (kept for the shell session).
+  property string dockerQuery: ""
+  property string dockerSort: "name"       // name | created | cpu | memory
+  property bool dockerDesc: false
+  property string dockerState: "all"       // all | running | stopped | updates
+  property bool dockerFiltersOpen: false
+  readonly property bool dockerFiltered: dockerSort !== "name" || dockerDesc || dockerState !== "all"
+  property string tab: "monitoring"
+
+  readonly property Item panelFlick: panel.loadedContent ? panel.loadedContent.panelFlick : null
+
+  function selectTab(name) {
+    if (tabs.indexOf(name) < 0 && name !== "alerts") return
+    tab = name
+    if (panelFlick) panelFlick.contentY = 0
+  }
+
+  function stepTab(direction) {
+    var i = tabs.indexOf(tab)
+    selectTab(tabs[(i + direction + tabs.length) % tabs.length])
+  }
+
+  function stepHost(direction) {
+    var n = lab.hosts.length
+    if (n > 1) lab.selectHost((lab.hostIndex + direction + n) % n)
+  }
+
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
+
+  onOpenedChanged: if (opened) {
+    lab.refresh()
+    Qt.callLater(function() { if (panel.loadedContent) panel.loadedContent.forceActiveFocus() })
+  }
+
+  Strings {
+    id: strings
+    directory: Qt.resolvedUrl("i18n")
+    language: codeFor(root.setting("language", "English"))
+  }
+
+  Service {
+    id: lab
+    settings: root.settings
+    pluginDir: root.pluginDir
+    active: root.opened
+  }
+
+  ServicesClient {
+    id: svc
+    host: lab.host
+    docker: lab.docker
+    helper: lab.helper
+    secretsPath: lab.secretsPath
+    active: root.opened && root.tab === "services"
+    refreshMs: Math.max(lab.refreshMs, 15000)
+    translate: function(k) { return strings.t(k) }
+    formatNumber: root.fmt
+  }
+
+  ShellIpc {
+    target: root.ipcTarget
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function show(): void { root.open() }
+    function hide(): void { root.close() }
+    function toggle(): void { root.toggle() }
+    function refresh(): string { lab.refresh(); return "ok" }
+    function ssh(): string { lab.openShell(); return "ok" }
+    function tab(name: string): string { root.selectTab(name); return root.tab }
+    function dockerFilter(sort: string, order: string, query: string): string {
+      if (["name", "created", "cpu", "memory"].indexOf(sort) >= 0) root.dockerSort = sort
+      root.dockerDesc = order === "desc"
+      root.dockerQuery = query
+      root.selectTab("docker")
+      return root.dockerSort + " " + (root.dockerDesc ? "desc" : "asc")
+    }
+    function dockerFilters(open: bool): void { root.dockerFiltersOpen = open }
+    function recheck(hostKey: string): string {
+      if (!root.watcher) return "no watcher"
+      root.watcher.checkPackages(hostKey)
+      return "ok"
+    }
+    function service(id: string): string { root.selectTab("services"); svc.select(id); return svc.service ? svc.service.id : "" }
+  }
+
+  BarIconButton {
+    id: button
+    anchors.fill: parent
+    bar: root.bar
+    text: "󰒋"
+    labelText: root.alertCount > 0 ? String(root.alertCount) : ""
+    opacity: lab.hosts.length === 0 || lab.hostError !== "" ? 0.6 : 1.0
+    onPressed: function(buttonCode) {
+      if (buttonCode === Qt.MiddleButton) lab.openShell()
+      else if (buttonCode === Qt.RightButton) lab.refresh()
+      else root.toggle()
+    }
+  }
+
+  KeyboardPanel {
+    id: panel
+    anchorItem: button
+    owner: root
+    bar: root.bar
+    open: root.opened
+    focusTarget: panel.loadedContent
+    contentWidth: panel.fittedContentWidth(Style.space(470))
+    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(620))
+
+    content: PanelKeyCatcher {
+      property alias panelFlick: panelFlick
+      implicitHeight: column.implicitHeight
+      anchors.fill: parent
+      blocked: root.inputFocused
+      onMoveRequested: function(dx, dy) {
+        if (dx !== 0) root.stepTab(dx)
+        else if (dy !== 0 && panelFlick.interactive)
+          panelFlick.contentY = Math.max(0, Math.min(panelFlick.contentHeight - panelFlick.height, panelFlick.contentY + dy * Style.space(48)))
+      }
+      onActivateRequested: lab.openShell()
+      onCloseRequested: root.close()
+      onTabRequested: function(direction) { root.switchPanel(direction) }
+      onTextKey: function(t) {
+        if (t === "r" || t === "R") lab.refresh()
+        else if (t === "s" || t === "S") lab.openShell()
+        else if (t === "e" || t === "E") lab.editConfig()
+        else if (t === "1") root.selectTab("monitoring")
+        else if (t === "2") root.selectTab("docker")
+        else if (t === "3") root.selectTab("services")
+        else if (t === "4") root.selectTab("links")
+        else if (t === "a" || t === "A") root.selectTab("alerts")
+        else if (t === "[") root.stepHost(-1)
+        else if (t === "]") root.stepHost(1)
+      }
+
+      Flickable {
+        id: panelFlick
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        Column {
+          id: column
+          width: panelFlick.width
+          spacing: Style.space(12)
+
+          // ---------- header ----------
+          PanelHero {
+            id: hero
+            width: parent.width
+            title: lab.host ? lab.host.name : strings.t("title")
+            meta: root.heroMeta()
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            iconOpacity: lab.online ? 1.0 : 0.5
+            iconComponent: Component {
+              Text {
+                text: "󰒋"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.display
+              }
+            }
+            trailingControl: Component {
+              Row {
+                spacing: Style.space(4)
+                PanelActionButton {
+                  visible: root.watcher !== null
+                  iconText: root.alertCount > 0 ? "󰵙" : (root.updateCount > 0 ? "󰂞" : "󰂚")
+                  tooltipText: strings.t("alerts.button").arg(root.alertCount).arg(root.updateCount)
+                  foreground: root.alertCount > 0 && root.watcher && root.watcher.hasErrors ? root.urgent : root.foreground
+                  fontFamily: root.fontFamily
+                  bordered: root.tab === "alerts"
+                  onClicked: root.selectTab(root.tab === "alerts" ? "monitoring" : "alerts")
+                }
+                PanelActionButton {
+                  iconText: "󰑐"
+                  tooltipText: strings.t("action.refresh")
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  enabled: lab.host !== null && !lab.loadingMetrics
+                  onClicked: lab.refresh()
+                }
+                PanelActionButton {
+                  iconText: "󰏫"
+                  tooltipText: strings.t("action.edit")
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: lab.editConfig()
+                }
+                PanelActionButton {
+                  iconText: "󰆍"
+                  tooltipText: strings.t("action.ssh")
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  bordered: true
+                  enabled: lab.host !== null
+                  onClicked: lab.openShell()
+                }
+              }
+            }
+          }
+
+          // ---------- setup / errors ----------
+          Column {
+            visible: lab.configError !== ""
+            width: parent.width
+            spacing: Style.space(10)
+
+            PlainText {
+              width: parent.width
+              text: lab.configError === "json" ? strings.t("config.invalid").arg(lab.configPath)
+                  : lab.configError === "empty" ? strings.t("config.empty").arg(lab.configPath)
+                  : strings.t("config.missing").arg(lab.configPath)
+              color: lab.configError === "json" ? root.urgent : root.dim
+              wrapMode: Text.WordWrap
+            }
+            Button {
+              text: lab.configError === "missing" ? strings.t("config.create") : strings.t("action.edit")
+              iconText: "󰏫"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              bordered: true
+              onClicked: lab.editConfig()
+            }
+          }
+
+          // ---------- host + tab pickers ----------
+          ButtonGroup {
+            visible: lab.hosts.length > 1
+            width: parent.width
+            options: lab.hosts.map(function(h, i) { return { value: String(i), label: h.name } })
+            value: String(lab.hostIndex)
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            focusable: false
+            onChanged: function(v) { lab.selectHost(parseInt(v, 10)) }
+          }
+
+          ButtonGroup {
+            visible: lab.host !== null
+            options: [
+              { value: "monitoring", label: strings.t("tab.monitoring"), icon: "󰄨" },
+              { value: "docker", label: strings.t("tab.docker"), icon: "󰡨" },
+              { value: "services", label: strings.t("tab.services"), icon: "󰒓" },
+              { value: "links", label: strings.t("tab.links"), icon: "󰖟" }
+            ]
+            value: root.tab
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            focusable: false
+            onChanged: function(v) { root.selectTab(v) }
+          }
+
+          PanelSeparator {
+            visible: lab.host !== null
+            foreground: root.foreground
+          }
+
+          // ---------- Monitoring ----------
+          Column {
+            id: monitoring
+            readonly property var m: lab.metrics
+            visible: lab.host !== null && root.tab === "monitoring"
+            width: parent.width
+            spacing: Style.space(10)
+
+            PlainText {
+              visible: monitoring.m === null
+              width: parent.width
+              text: lab.hostError !== "" ? lab.hostError : strings.t("loading")
+              color: lab.hostError !== "" ? root.urgent : root.dim
+              wrapMode: Text.WordWrap
+            }
+
+            Column {
+              visible: monitoring.m !== null
+              width: parent.width
+              spacing: Style.space(10)
+
+              Meter {
+                visible: monitoring.m && monitoring.m.cpu >= 0
+                label: strings.t("metric.cpu")
+                detail: monitoring.m ? strings.t("metric.cpuDetail").arg(monitoring.m.cpus).arg(monitoring.m.load.map(function(v) { return root.fmt(v, 2) }).join(" ")) : ""
+                ratio: monitoring.m ? monitoring.m.cpu / 100 : 0
+                value: monitoring.m ? root.fmt(monitoring.m.cpu, 0) + " %" : ""
+                tooltip: monitoring.m ? monitoring.m.cpuModel : ""
+              }
+
+              Meter {
+                visible: monitoring.m && monitoring.m.mem !== null
+                label: strings.t("metric.memory")
+                ratio: monitoring.m && monitoring.m.mem ? monitoring.m.mem.used / monitoring.m.mem.total : 0
+                value: monitoring.m && monitoring.m.mem ? Model.bytes(monitoring.m.mem.used, root.fmt) + " / " + Model.bytes(monitoring.m.mem.total, root.fmt) : ""
+              }
+
+              Meter {
+                visible: monitoring.m && monitoring.m.swap !== null
+                label: strings.t("metric.swap")
+                ratio: monitoring.m && monitoring.m.swap ? monitoring.m.swap.used / monitoring.m.swap.total : 0
+                value: monitoring.m && monitoring.m.swap ? Model.bytes(monitoring.m.swap.used, root.fmt) + " / " + Model.bytes(monitoring.m.swap.total, root.fmt) : ""
+              }
+
+              Repeater {
+                model: monitoring.m ? monitoring.m.gpus : []
+                Meter {
+                  required property var modelData
+                  label: strings.t("metric.gpu")
+                  tooltip: modelData.name
+                  detail: (modelData.memTotal > 0 ? strings.t("metric.vram").arg(Model.bytes(modelData.memUsed, root.fmt)).arg(Model.bytes(modelData.memTotal, root.fmt)) : "")
+                        + (modelData.temp >= 0 ? "  ·  " + root.fmt(modelData.temp, 0) + " °C" : "")
+                  ratio: modelData.util / 100
+                  value: root.fmt(modelData.util, 0) + " %"
+                }
+              }
+
+              PanelSectionHeader {
+                visible: monitoring.m && monitoring.m.disks.length > 0
+                text: strings.t("section.storage")
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Repeater {
+                model: monitoring.m ? monitoring.m.disks : []
+                Meter {
+                  required property var modelData
+                  label: modelData.mount
+                  ratio: modelData.used / modelData.total
+                  value: Model.bytes(modelData.used, root.fmt) + " / " + Model.bytes(modelData.total, root.fmt)
+                }
+              }
+
+              PanelSectionHeader {
+                visible: monitoring.m && monitoring.m.temps.length > 0
+                text: strings.t("section.sensors")
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Flow {
+                visible: monitoring.m && monitoring.m.temps.length > 0
+                width: parent.width
+                spacing: Style.space(8)
+                Repeater {
+                  model: monitoring.m ? monitoring.m.temps : []
+                  Chip {
+                    required property var modelData
+                    text: modelData.name + "  " + root.fmt(modelData.value, 0) + " °C"
+                    hot: modelData.value >= 80
+                  }
+                }
+              }
+
+              PanelSectionHeader {
+                text: strings.t("section.system")
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              InfoPair { visible: monitoring.m && monitoring.m.net !== null; label: strings.t("metric.network"); value: monitoring.m && monitoring.m.net ? "↓ " + Model.rate(monitoring.m.net.rx, root.fmt) + "   ↑ " + Model.rate(monitoring.m.net.tx, root.fmt) : "" }
+              InfoPair { label: strings.t("metric.uptime"); value: monitoring.m ? Model.duration(monitoring.m.uptime) : "" }
+              InfoPair { visible: monitoring.m && monitoring.m.os !== ""; label: strings.t("metric.os"); value: monitoring.m ? monitoring.m.os : "" }
+              InfoPair { label: strings.t("metric.kernel"); value: monitoring.m ? monitoring.m.kernel : "" }
+
+              PackagesSection { width: parent.width }
+
+              PlainText {
+                visible: lab.hostError !== ""
+                width: parent.width
+                text: lab.hostError
+                color: root.urgent
+                wrapMode: Text.WordWrap
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
+          // ---------- Docker ----------
+          Column {
+            id: dockerTab
+            readonly property var d: lab.docker
+            readonly property int running: d ? d.containers.filter(function(c) { return c.state === "running" }).length : 0
+            readonly property var shown: {
+              if (!d) return []
+              var list = d.containers
+              if (root.dockerState === "updates") list = list.filter(function(c) { return root.hasImageUpdate(c.name) })
+              return Model.filterContainers(list, root.dockerQuery, root.dockerState === "updates" ? "all" : root.dockerState, root.dockerSort, root.dockerDesc)
+            }
+            visible: lab.host !== null && root.tab === "docker"
+            width: parent.width
+            spacing: Style.space(6)
+
+            PlainText {
+              visible: dockerTab.d === null || dockerTab.d.error !== "" || dockerTab.d.containers.length === 0
+              width: parent.width
+              wrapMode: Text.WordWrap
+              color: dockerTab.d && dockerTab.d.error !== "" ? root.urgent : root.dim
+              text: dockerTab.d === null ? strings.t("loading")
+                  : dockerTab.d.error !== "" ? strings.t("docker.error." + dockerTab.d.error)
+                  : strings.t("docker.none")
+            }
+
+            PlainText {
+              visible: dockerTab.d !== null && dockerTab.d.containers.length > 0
+              width: parent.width
+              color: root.dim
+              font.pixelSize: Style.font.caption
+              text: strings.t("docker.summary").arg(dockerTab.running).arg(dockerTab.d ? dockerTab.d.containers.length : 0)
+                  + (dockerTab.d && dockerTab.shown.length !== dockerTab.d.containers.length ? "  ·  " + strings.t("docker.shown").arg(dockerTab.shown.length) : "")
+                  + (lab.loadingDocker ? "  ·  " + strings.t("loading") : "")
+            }
+
+            // Search + filter button
+            RowLayout {
+              visible: dockerTab.d !== null && dockerTab.d.containers.length > 0
+              width: parent.width
+              spacing: Style.space(6)
+
+              TextField {
+                id: dockerSearch
+                Layout.fillWidth: true
+                text: root.dockerQuery
+                placeholderText: strings.t("docker.searchPlaceholder")
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                foreground: root.foreground
+                horizontalPadding: Style.spacing.controlGap
+                verticalPadding: Style.spacing.controlPaddingY
+                onTextChanged: if (text !== root.dockerQuery) root.dockerQuery = text
+                onActiveFocusChanged: root.inputFocused = activeFocus
+                Keys.onEscapePressed: {
+                  if (text !== "") text = ""
+                  else { focus = false; if (panel.loadedContent) panel.loadedContent.forceActiveFocus() }
+                }
+              }
+              PanelActionButton {
+                iconText: "󰈲"
+                tooltipText: strings.t("docker.filter")
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                bordered: root.dockerFiltersOpen || root.dockerFiltered
+                onClicked: root.dockerFiltersOpen = !root.dockerFiltersOpen
+              }
+            }
+
+            // Filter options
+            Column {
+              visible: root.dockerFiltersOpen && dockerTab.d !== null
+              width: parent.width
+              spacing: Style.space(8)
+              topPadding: Style.space(4)
+              bottomPadding: Style.space(6)
+
+              FilterLabel { text: strings.t("docker.sortBy") }
+              ButtonGroup {
+                options: [
+                  { value: "name", label: strings.t("docker.sort.name") },
+                  { value: "created", label: strings.t("docker.sort.created") },
+                  { value: "cpu", label: strings.t("docker.sort.cpu") },
+                  { value: "memory", label: strings.t("docker.sort.memory") }
+                ]
+                value: root.dockerSort
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                focusable: false
+                onChanged: function(v) { root.dockerSort = v }
+              }
+
+              FilterLabel { text: strings.t("docker.order") }
+              ButtonGroup {
+                options: [
+                  { value: "asc", label: strings.t("docker.order.asc"), icon: "󰒼" },
+                  { value: "desc", label: strings.t("docker.order.desc"), icon: "󰒽" }
+                ]
+                value: root.dockerDesc ? "desc" : "asc"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                focusable: false
+                onChanged: function(v) { root.dockerDesc = v === "desc" }
+              }
+
+              FilterLabel { text: strings.t("docker.stateFilter") }
+              ButtonGroup {
+                options: [
+                  { value: "all", label: strings.t("docker.state.all") },
+                  { value: "running", label: strings.t("docker.state.running") },
+                  { value: "stopped", label: strings.t("docker.state.stopped") },
+                  { value: "updates", label: strings.t("docker.state.updates") }
+                ]
+                value: root.dockerState
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                focusable: false
+                onChanged: function(v) { root.dockerState = v }
+              }
+
+              Button {
+                visible: root.dockerFiltered || root.dockerQuery !== ""
+                text: strings.t("docker.resetFilters")
+                iconText: "󰑐"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: {
+                  root.dockerSort = "name"
+                  root.dockerDesc = false
+                  root.dockerState = "all"
+                  root.dockerQuery = ""
+                }
+              }
+
+              PanelSeparator { foreground: root.foreground }
+            }
+
+            PlainText {
+              visible: dockerTab.d !== null && dockerTab.d.containers.length > 0 && dockerTab.shown.length === 0
+              width: parent.width
+              color: root.dim
+              text: strings.t("docker.noMatch")
+            }
+
+            PlainText {
+              visible: lab.actionError !== ""
+              width: parent.width
+              text: lab.actionError
+              color: root.urgent
+              wrapMode: Text.WordWrap
+              font.pixelSize: Style.font.caption
+            }
+
+            Repeater {
+              model: dockerTab.shown
+              ContainerRow {
+                required property var modelData
+                width: dockerTab.width
+                container: modelData
+              }
+            }
+          }
+
+          // ---------- Alerts & updates ----------
+          AlertsView {
+            visible: root.tab === "alerts"
+            width: parent.width
+          }
+
+          // ---------- Services ----------
+          ServicesView {
+            visible: lab.host !== null && root.tab === "services"
+            width: parent.width
+          }
+
+          // ---------- Links ----------
+          Column {
+            id: linksTab
+            visible: lab.host !== null && root.tab === "links"
+            width: parent.width
+            spacing: Style.space(6)
+
+            PlainText {
+              visible: lab.host !== null && lab.host.links.length === 0
+              width: parent.width
+              wrapMode: Text.WordWrap
+              color: root.dim
+              text: strings.t("links.none").arg(lab.configPath)
+            }
+
+            Repeater {
+              model: lab.host ? lab.host.links : []
+              LinkRow {
+                required property var modelData
+                width: linksTab.width
+                link: modelData
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function heroMeta() {
+    if (!lab.host) return strings.t("subtitle")
+    if (lab.hostError !== "") return strings.t("status.offline")
+    var m = lab.metrics
+    if (!m) return lab.host.target
+    if (m.hostname === "" || m.hostname === lab.host.target) return lab.host.target
+    return m.hostname + "  ·  " + lab.host.target
+  }
+
+  // ---------- components ----------
+
+  component PlainText: Text {
+    textFormat: Text.PlainText
+    color: root.foreground
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.bodySmall
+    elide: wrapMode === Text.NoWrap ? Text.ElideRight : Text.ElideNone
+  }
+
+  component Meter: Column {
+    id: meter
+    property string label: ""
+    property string detail: ""
+    property string value: ""
+    property string tooltip: ""
+    property real ratio: 0
+    readonly property real clamped: Math.max(0, Math.min(1, isFinite(ratio) ? ratio : 0))
+    readonly property color tint: clamped >= 0.9 ? root.urgent : root.foreground
+
+    width: parent ? parent.width : 0
+    spacing: Style.space(4)
+
+    Row {
+      width: parent.width
+      spacing: Style.space(8)
+      PlainText {
+        id: meterLabel
+        width: parent.width - meterValue.implicitWidth - parent.spacing
+        text: meter.detail !== "" ? meter.label + "   " + meter.detail : meter.label
+        opacity: 0.8
+      }
+      PlainText {
+        id: meterValue
+        text: meter.value
+        color: meter.tint
+      }
+    }
+
+    Rectangle {
+      width: parent.width
+      height: Style.space(6)
+      radius: height / 2
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+      Rectangle {
+        width: Math.max(height, parent.width * meter.clamped)
+        height: parent.height
+        radius: parent.radius
+        color: meter.tint
+        opacity: 0.85
+        Behavior on width { NumberAnimation { duration: Style.duration(220); easing.type: Easing.OutCubic } }
+      }
+    }
+
+    HoverHandler { id: meterHover }
+    PanelToolTip {
+      visible: meter.tooltip !== "" && meterHover.hovered
+      text: meter.tooltip
+      fontFamily: root.fontFamily
+    }
+  }
+
+  component FilterLabel: Text {
+    textFormat: Text.PlainText
+    color: root.dim
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+  }
+
+  component Chip: Rectangle {
+    id: chip
+    property string text: ""
+    property bool hot: false
+    implicitWidth: chipText.implicitWidth + Style.space(16)
+    implicitHeight: chipText.implicitHeight + Style.space(6)
+    radius: Style.space(4)
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+    border.width: 1
+    border.color: chip.hot ? root.urgent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.15)
+    PlainText {
+      id: chipText
+      anchors.centerIn: parent
+      text: chip.text
+      color: chip.hot ? root.urgent : root.foreground
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  component InfoPair: Row {
+    property string label: ""
+    property string value: ""
+    width: parent ? parent.width : 0
+    spacing: Style.space(8)
+    PlainText { id: pairLabel; text: label; opacity: 0.6 }
+    PlainText {
+      width: parent.width - pairLabel.implicitWidth - parent.spacing
+      horizontalAlignment: Text.AlignRight
+      text: value
+    }
+  }
+
+  component ServicesView: Column {
+    id: sv
+    readonly property var service: svc.service
+    readonly property var vm: svc.view
+    readonly property var cat: svc.catalog
+    readonly property bool needsSecret: service !== null && (!svc.hasSecret(service) || (vm !== null && vm.state === "auth"))
+    property bool editing: false
+    readonly property bool showForm: service !== null && (needsSecret || editing)
+    readonly property var search: service ? (svc.searchResults[service.key] || null) : null
+
+    spacing: Style.space(10)
+    onServiceChanged: editing = false
+
+    PlainText {
+      visible: svc.services.length === 0
+      width: parent.width
+      wrapMode: Text.WordWrap
+      color: root.dim
+      text: lab.docker === null ? strings.t("loading") : strings.t("services.none")
+    }
+
+    // Picker + service header
+    RowLayout {
+      visible: sv.service !== null
+      width: parent.width
+      spacing: Style.space(6)
+
+      Dropdown {
+        Layout.fillWidth: true
+        showLabel: false
+        options: svc.services.map(function(x) { return { value: x.id, label: x.name } })
+        value: sv.service ? sv.service.id : ""
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onChanged: function(v) { svc.select(v) }
+      }
+      PanelActionButton {
+        iconText: "󰑐"
+        tooltipText: strings.t("action.refresh")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        enabled: !svc.isLoading
+        opacity: svc.isLoading ? 0.4 : 1
+        onClicked: svc.refresh()
+      }
+      PanelActionButton {
+        iconText: "󰌆"
+        tooltipText: strings.t("service.credentials")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: sv.editing = !sv.editing
+      }
+      PanelActionButton {
+        iconText: "󰏌"
+        tooltipText: strings.t("action.openWeb")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        bordered: true
+        onClicked: { svc.openWeb(); root.close() }
+      }
+    }
+
+    PlainText {
+      visible: sv.service !== null
+      width: parent.width
+      color: root.dim
+      font.pixelSize: Style.font.caption
+      text: {
+        if (!sv.service) return ""
+        var parts = [sv.service.url]
+        if (sv.vm && sv.vm.version !== "") parts.push("v" + sv.vm.version)
+        if (!sv.service.running) parts.push(strings.t("services.stopped"))
+        else if (sv.vm && sv.vm.state === "ok") parts.push(strings.t("status.online"))
+        if (svc.isLoading) parts.push(strings.t("loading"))
+        return parts.join("  ·  ")
+      }
+    }
+
+    PlainText {
+      visible: svc.notice !== ""
+      width: parent.width
+      wrapMode: Text.WordWrap
+      text: svc.notice
+      color: svc.noticeError ? root.urgent : root.foreground
+    }
+
+    // Credentials form
+    Column {
+      visible: sv.showForm
+      width: parent.width
+      spacing: Style.space(8)
+
+      PlainText {
+        width: parent.width
+        wrapMode: Text.WordWrap
+        color: sv.vm && sv.vm.state === "auth" && svc.hasSecret(sv.service) ? root.urgent : root.dim
+        text: (sv.vm && sv.vm.state === "auth" && svc.hasSecret(sv.service) ? strings.t("service.rejected") + " " : "")
+            + (sv.cat ? strings.t(sv.cat.help) : "")
+      }
+
+      Repeater {
+        id: fieldRepeater
+        model: sv.cat ? sv.cat.fields : []
+        TextField {
+          required property var modelData
+          width: parent.width
+          password: modelData.password
+          placeholderText: strings.t(modelData.label)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          foreground: root.foreground
+          horizontalPadding: Style.spacing.controlGap
+          verticalPadding: Style.spacing.controlPaddingY
+          onActiveFocusChanged: root.inputFocused = activeFocus
+          onAccepted: sv.submit()
+          Keys.onEscapePressed: { text = ""; sv.editing = false; focus = false }
+        }
+      }
+
+      Flow {
+        width: parent.width
+        spacing: Style.space(6)
+        Button {
+          text: strings.t("service.save")
+          iconText: "󰆓"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          bordered: true
+          onClicked: sv.submit()
+        }
+        Button {
+          visible: sv.cat !== null && sv.cat.fetchKey === true && sv.service.container !== ""
+          text: strings.t("service.fetchKey")
+          iconText: "󰆍"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: { svc.fetchKey(); sv.editing = false }
+        }
+        Button {
+          visible: svc.hasSecret(sv.service)
+          text: strings.t("service.forget")
+          iconText: "󰩺"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: { svc.deleteSecret(); sv.editing = false }
+        }
+      }
+    }
+
+    function submit() {
+      var values = {}
+      for (var i = 0; i < fieldRepeater.count; i++) {
+        var f = fieldRepeater.itemAt(i)
+        values[f.modelData.key] = f.text
+      }
+      svc.saveSecret(values)
+      for (var j = 0; j < fieldRepeater.count; j++) fieldRepeater.itemAt(j).text = ""
+      root.inputFocused = false
+      editing = false
+      if (panel.loadedContent) panel.loadedContent.forceActiveFocus()
+    }
+
+    PlainText {
+      visible: sv.vm !== null && (sv.vm.state === "down" || sv.vm.state === "error") && !sv.showForm
+      width: parent.width
+      wrapMode: Text.WordWrap
+      color: root.urgent
+      text: sv.vm ? sv.vm.error : ""
+    }
+
+    // Overview
+    Column {
+      visible: sv.vm !== null && sv.vm.state === "ok" && !sv.showForm
+      width: parent.width
+      spacing: Style.space(10)
+
+      Repeater {
+        model: sv.vm ? sv.vm.alerts : []
+        PlainText {
+          required property var modelData
+          width: parent.width
+          wrapMode: Text.WordWrap
+          color: modelData.level === "error" ? root.urgent : root.foreground
+          text: "󰀦  " + modelData.text
+        }
+      }
+
+      Flow {
+        width: parent.width
+        spacing: Style.space(8)
+        Repeater {
+          model: sv.vm ? sv.vm.stats : []
+          Chip {
+            required property var modelData
+            text: modelData.label + "  " + modelData.value
+          }
+        }
+      }
+
+      Flow {
+        visible: sv.vm !== null && sv.vm.actions.length > 0
+        width: parent.width
+        spacing: Style.space(6)
+        Repeater {
+          model: sv.vm ? sv.vm.actions : []
+          Button {
+            required property var modelData
+            text: modelData.label
+            iconText: modelData.icon
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            bordered: true
+            enabled: svc.busyAction === ""
+            opacity: svc.busyAction.indexOf(sv.service.key + "|" + modelData.id + "|") === 0 ? 0.5 : 1
+            onClicked: svc.runAction(modelData.id, null)
+          }
+        }
+      }
+
+      // Prowlarr search
+      Column {
+        visible: sv.cat !== null && sv.cat.search === true
+        width: parent.width
+        spacing: Style.space(6)
+
+        RowLayout {
+          width: parent.width
+          spacing: Style.space(6)
+          TextField {
+            id: searchField
+            Layout.fillWidth: true
+            placeholderText: strings.t("prowlarr.searchPlaceholder")
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            foreground: root.foreground
+            horizontalPadding: Style.spacing.controlGap
+            verticalPadding: Style.spacing.controlPaddingY
+            onActiveFocusChanged: root.inputFocused = activeFocus
+            onAccepted: svc.search(text)
+            Keys.onEscapePressed: { if (text !== "") { text = ""; svc.clearSearch() } else { focus = false; if (panel.loadedContent) panel.loadedContent.forceActiveFocus() } }
+          }
+          PanelActionButton {
+            iconText: "󰍉"
+            tooltipText: strings.t("prowlarr.search")
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            enabled: svc.searching === ""
+            onClicked: svc.search(searchField.text)
+          }
+        }
+
+        PlainText {
+          visible: svc.searching !== "" || (sv.search !== null && (sv.search.items.length === 0 || sv.search.error))
+          width: parent.width
+          color: sv.search && sv.search.error ? root.urgent : root.dim
+          font.pixelSize: Style.font.caption
+          text: svc.searching !== "" ? strings.t("prowlarr.searching")
+              : sv.search && sv.search.error ? sv.search.error
+              : strings.t("prowlarr.noResults")
+        }
+
+        Repeater {
+          model: sv.search && svc.searching === "" ? sv.search.items : []
+          ServiceItemRow {
+            required property var modelData
+            width: sv.width
+            item: modelData
+          }
+        }
+      }
+
+      Repeater {
+        model: sv.vm ? sv.vm.sections : []
+        Column {
+          required property var modelData
+          width: sv.width
+          spacing: Style.space(4)
+
+          PanelSectionHeader {
+            text: modelData.title
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+          PlainText {
+            visible: modelData.items.length === 0
+            width: parent.width
+            color: root.dim
+            text: modelData.empty || ""
+          }
+          Repeater {
+            model: modelData.items
+            ServiceItemRow {
+              required property var modelData
+              width: sv.width
+              item: modelData
+            }
+          }
+        }
+      }
+    }
+  }
+
+  component ServiceItemRow: CursorSurface {
+    id: itemRow
+    property var item: null
+    readonly property bool busy: item !== null && svc.service !== null && svc.busyAction === svc.service.key + "|" + (item.actions.length ? item.actions[0].id : "") + "|" + item.id
+
+    foreground: root.foreground
+    hasCursor: itemMouse.containsMouse
+    implicitHeight: itemLayout.implicitHeight + Style.spacing.rowPaddingX
+    opacity: busy ? 0.5 : 1
+
+    MouseArea {
+      id: itemMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: itemRow.item && itemRow.item.activate ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: if (itemRow.item && itemRow.item.activate) svc.runAction(itemRow.item.activate, itemRow.item)
+    }
+
+    RowLayout {
+      id: itemLayout
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(6)
+      spacing: Style.space(8)
+
+      Rectangle {
+        visible: itemRow.item !== null && itemRow.item.on !== undefined
+        Layout.alignment: Qt.AlignVCenter
+        width: Style.space(8)
+        height: width
+        radius: width / 2
+        color: itemRow.item && itemRow.item.on ? root.foreground : "transparent"
+        border.width: 1
+        border.color: root.foreground
+      }
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(2)
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+          PlainText {
+            Layout.fillWidth: true
+            text: itemRow.item ? itemRow.item.title : ""
+            font.pixelSize: Style.font.body
+          }
+          PlainText {
+            visible: text !== ""
+            text: itemRow.item ? itemRow.item.meta : ""
+            color: root.dim
+            font.pixelSize: Style.font.caption
+          }
+        }
+        PlainText {
+          visible: text !== ""
+          Layout.fillWidth: true
+          text: itemRow.item ? itemRow.item.subtitle : ""
+          color: root.dim
+          font.pixelSize: Style.font.caption
+        }
+        Rectangle {
+          visible: itemRow.item !== null && itemRow.item.progress >= 0
+          Layout.fillWidth: true
+          Layout.topMargin: Style.space(2)
+          height: Style.space(4)
+          radius: height / 2
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+          Rectangle {
+            width: parent.width * Math.max(0, Math.min(1, itemRow.item ? itemRow.item.progress : 0))
+            height: parent.height
+            radius: parent.radius
+            color: root.foreground
+            opacity: 0.8
+          }
+        }
+      }
+
+      Repeater {
+        model: itemRow.item ? itemRow.item.actions : []
+        PanelActionButton {
+          required property var modelData
+          iconText: modelData.icon
+          tooltipText: modelData.tooltip
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          enabled: svc.busyAction === ""
+          onClicked: svc.runAction(modelData.id, itemRow.item)
+        }
+      }
+    }
+  }
+
+  component PackagesSection: Column {
+    id: pk
+    readonly property var w: root.watcher
+    readonly property string hostKey: lab.host ? lab.host.key : ""
+    readonly property var u: w && hostKey !== "" ? (w.updates[hostKey] || null) : null
+    readonly property var os: u ? u.os : null
+    readonly property bool checking: w !== null && (!!w.checking[hostKey] || !!w.checkingPackages[hostKey])
+    readonly property double checkedAt: u ? (u.packagesCheckedAt || u.checkedAt || 0) : 0
+    readonly property bool stale: os !== null && !os.fresh && os.listsAge > 2 * 86400
+    readonly property bool multi: os !== null && os.managers !== undefined && os.managers.length > 1
+    property bool expanded: false
+    readonly property int limit: expanded ? 200 : 12
+
+    visible: w !== null
+    spacing: Style.space(6)
+
+    PanelSectionHeader {
+      text: strings.t("packages.title")
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+    }
+
+    PlainText {
+      width: parent.width
+      wrapMode: Text.WordWrap
+      color: pk.os && pk.os.count > 0 ? root.foreground : root.dim
+      text: {
+        if (pk.checking) return strings.t("updates.checking")
+        if (!pk.u) return strings.t("packages.notChecked")
+        if (!pk.os) return strings.t("packages.unsupported")
+        if (pk.os.count === 0) return pk.stale ? strings.t("packages.noneStale") : "󰄬  " + strings.t("packages.upToDate")
+        return strings.t("updates.os").arg(pk.os.count)
+            + (pk.os.security > 0 ? "  ·  " + strings.t("updates.security").arg(pk.os.security) : "")
+      }
+    }
+
+    PlainText {
+      visible: pk.os !== null
+      width: parent.width
+      wrapMode: Text.WordWrap
+      font.pixelSize: Style.font.caption
+      color: pk.stale ? root.urgent : root.dim
+      text: !pk.os ? "" : (pk.multi ? pk.os.managers.map(function(m) { return m.manager + " " + m.count }).join(", ") : pk.os.manager)
+          + (pk.os.fresh ? "  ·  " + strings.t("packages.fresh")
+             : (pk.os.listsAge >= 0 ? "  ·  " + strings.t("packages.listsAge").arg(root.ago(pk.checkedAt - pk.os.listsAge * 1000)) : "  ·  " + strings.t("packages.notRefreshable")))
+          + (pk.stale ? "  ·  " + strings.t("packages.staleFallback") : "")
+          + "  ·  " + strings.t("updates.lastCheck").arg(root.ago(pk.checkedAt))
+    }
+
+    PlainText {
+      visible: pk.u !== null && pk.u.busy === true
+      width: parent.width
+      wrapMode: Text.WordWrap
+      color: root.foreground
+      text: "󰑐  " + strings.t("packages.busy")
+    }
+
+    PlainText {
+      visible: pk.u !== null && pk.u.reboot === true
+      width: parent.width
+      color: root.urgent
+      text: "󰀦  " + strings.t("packages.reboot")
+    }
+
+    Flow {
+      width: parent.width
+      spacing: Style.space(6)
+      Button {
+        text: pk.checking ? strings.t("updates.checking") : strings.t("updates.check")
+        iconText: "󰑐"
+        iconSpinning: pk.checking
+        tooltipText: strings.t("packages.checkHint")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        enabled: !pk.checking
+        onClicked: pk.w.checkPackages(pk.hostKey)
+      }
+      Button {
+        visible: pk.os !== null && pk.os.count > 0
+        text: strings.t("packages.upgrade")
+        iconText: "󰆍"
+        tooltipText: strings.t("updates.upgradeOs")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        bordered: true
+        onClicked: pk.w.upgradePackages(pk.hostKey)
+      }
+    }
+
+    Repeater {
+      model: pk.os ? pk.os.packages.slice(0, pk.limit) : []
+      RowLayout {
+        required property var modelData
+        width: pk.width
+        spacing: Style.space(8)
+        PlainText {
+          text: modelData.security ? "󰕥" : "󰏗"
+          color: modelData.security ? root.urgent : root.dim
+          font.pixelSize: Style.font.bodySmall
+        }
+        PlainText {
+          Layout.fillWidth: true
+          text: modelData.name
+          font.pixelSize: Style.font.bodySmall
+        }
+        PlainText {
+          Layout.maximumWidth: pk.width * 0.55
+          horizontalAlignment: Text.AlignRight
+          color: root.dim
+          font.pixelSize: Style.font.caption
+          text: (pk.multi && modelData.source !== "" ? modelData.source + "  ·  " : "")
+              + (modelData.current !== "" ? modelData.current + "  →  " : "") + modelData.version
+        }
+      }
+    }
+
+    Button {
+      visible: pk.os !== null && pk.os.packages.length > 12
+      text: pk.expanded ? strings.t("packages.showLess") : strings.t("packages.showAll").arg(pk.os ? pk.os.packages.length : 0)
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      fontSize: Style.font.caption
+      onClicked: pk.expanded = !pk.expanded
+    }
+  }
+
+  component AlertsView: Column {
+    id: av
+    readonly property var w: root.watcher
+    readonly property var imageUpdates: w ? w.updateList.filter(function(u) { return u.kind === "image" }) : []
+    readonly property double lastCheck: {
+      if (!w) return 0
+      var oldest = 0
+      for (var i = 0; i < lab.hosts.length; i++) {
+        var u = w.updates[lab.hosts[i].key]
+        var at = u ? u.checkedAt || 0 : 0
+        if (i === 0 || at < oldest) oldest = at
+      }
+      return oldest
+    }
+    property bool armedAll: false
+    Timer { id: disarmAll; interval: 3000; onTriggered: av.armedAll = false }
+
+    spacing: Style.space(8)
+
+    PlainText {
+      visible: av.w === null
+      width: parent.width
+      wrapMode: Text.WordWrap
+      color: root.dim
+      text: strings.t("alerts.unavailable")
+    }
+
+    // Alerts
+    PanelSectionHeader {
+      visible: av.w !== null
+      text: strings.t("alerts.title")
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+    }
+    PlainText {
+      visible: av.w !== null && av.w.alerts.length === 0
+      width: parent.width
+      color: root.dim
+      text: "󰄬  " + strings.t("alerts.none")
+    }
+    Repeater {
+      model: av.w ? av.w.alerts : []
+      AlertRow {
+        required property var modelData
+        width: av.width
+        alert: modelData
+      }
+    }
+
+    PanelSeparator { visible: av.w !== null; foreground: root.foreground }
+
+    // Updates
+    RowLayout {
+      visible: av.w !== null
+      width: parent.width
+      spacing: Style.space(6)
+      PanelSectionHeader {
+        Layout.fillWidth: true
+        text: strings.t("updates.title")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+      }
+      Button {
+        text: av.w && av.w.checkingUpdates ? strings.t("updates.checking") : strings.t("updates.check")
+        iconText: "󰑐"
+        iconSpinning: av.w !== null && av.w.checkingUpdates
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        enabled: av.w !== null && !av.w.checkingUpdates
+        onClicked: av.w.checkUpdates("")
+      }
+    }
+    PlainText {
+      visible: av.w !== null
+      width: parent.width
+      wrapMode: Text.WordWrap
+      color: root.dim
+      font.pixelSize: Style.font.caption
+      text: strings.t("updates.lastCheck").arg(root.ago(av.lastCheck))
+          + (av.w && av.w.checkingUpdates ? "  ·  " + strings.t("updates.checkingHint") : "")
+    }
+    PlainText {
+      readonly property var counts: {
+        var c = { errors: 0, limited: 0 }
+        if (!av.w) return c
+        for (var k in av.w.updates) {
+          c.errors += av.w.updates[k].imageErrors || 0
+          c.limited += av.w.updates[k].rateLimited || 0
+        }
+        return c
+      }
+      visible: counts.errors > 0
+      width: parent.width
+      wrapMode: Text.WordWrap
+      color: counts.limited > 0 ? root.urgent : root.dim
+      font.pixelSize: Style.font.caption
+      text: counts.limited > 0 ? strings.t("updates.rateLimited").arg(counts.limited).arg(counts.errors)
+                               : strings.t("updates.unchecked").arg(counts.errors)
+    }
+    PlainText {
+      visible: av.w !== null && av.w.updateList.length === 0 && av.lastCheck > 0
+      width: parent.width
+      color: root.dim
+      text: "󰄬  " + strings.t("updates.none")
+    }
+    Button {
+      visible: av.imageUpdates.length > 1
+      text: av.armedAll ? strings.t("updates.confirmAll") : strings.t("updates.allImages").arg(av.imageUpdates.length)
+      iconText: av.armedAll ? "󰄬" : "󰇚"
+      foreground: av.armedAll ? root.urgent : root.foreground
+      fontFamily: root.fontFamily
+      bordered: true
+      onClicked: {
+        if (!av.armedAll) { av.armedAll = true; disarmAll.restart(); return }
+        av.armedAll = false
+        root.updateAllImages()
+      }
+    }
+    Repeater {
+      model: av.w ? av.w.updateList : []
+      UpdateRow {
+        required property var modelData
+        width: av.width
+        update: modelData
+      }
+    }
+  }
+
+  component AlertRow: CursorSurface {
+    id: alertRow
+    property var alert: null
+    readonly property color tint: alert && alert.level === "error" ? root.urgent : root.foreground
+
+    foreground: root.foreground
+    hasCursor: alertMouse.containsMouse
+    implicitHeight: alertLayout.implicitHeight + Style.spacing.rowPaddingX
+
+    MouseArea {
+      id: alertMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: if (alertRow.alert) root.goTo(alertRow.alert.hostKey, alertRow.alert.tab === "alerts" ? "monitoring" : alertRow.alert.tab)
+    }
+
+    RowLayout {
+      id: alertLayout
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(6)
+      spacing: Style.space(10)
+
+      PlainText {
+        Layout.alignment: Qt.AlignTop
+        text: !alertRow.alert ? "" : alertRow.alert.level === "error" ? "󰅚" : alertRow.alert.level === "warning" ? "󰀦" : "󰋽"
+        color: alertRow.tint
+        font.pixelSize: Style.font.icon
+      }
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+        PlainText {
+          Layout.fillWidth: true
+          text: alertRow.alert ? alertRow.alert.title : ""
+          color: alertRow.tint
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+        PlainText {
+          visible: text !== ""
+          Layout.fillWidth: true
+          text: alertRow.alert ? alertRow.alert.body : ""
+          color: root.dim
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+        PlainText {
+          Layout.fillWidth: true
+          color: root.dim
+          font.pixelSize: Style.font.caption
+          text: alertRow.alert ? (lab.hosts.length > 1 ? alertRow.alert.host + "  ·  " : "") + root.ago(alertRow.alert.since) : ""
+        }
+      }
+      PanelActionButton {
+        iconText: "󰅖"
+        tooltipText: strings.t("alerts.dismiss")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: if (root.watcher && alertRow.alert) root.watcher.dismiss(alertRow.alert.id)
+      }
+    }
+  }
+
+  component UpdateRow: CursorSurface {
+    id: upRow
+    property var update: null
+    readonly property var host: update ? root.hostByKey(update.hostKey) : null
+    readonly property bool isImage: update !== null && update.kind === "image"
+    readonly property bool updating: isImage && lab.isUpdating(update.hostKey, update.container)
+    readonly property bool queued: isImage && lab.isQueued(update.hostKey, update.container)
+    readonly property string result: isImage ? lab.updateResult(update.hostKey, update.container) : ""
+    property bool armed: false
+    Timer { id: upDisarm; interval: 3000; onTriggered: upRow.armed = false }
+
+    foreground: root.foreground
+    hasCursor: upHover.hovered
+    implicitHeight: upLayout.implicitHeight + Style.spacing.rowPaddingX
+    HoverHandler { id: upHover }
+
+    RowLayout {
+      id: upLayout
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(6)
+      spacing: Style.space(10)
+
+      PlainText {
+        Layout.alignment: Qt.AlignTop
+        text: !upRow.update ? "" : upRow.update.kind === "os" ? "󰏗" : upRow.update.kind === "image" ? "󰡨" : "󰒓"
+        font.pixelSize: Style.font.icon
+      }
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+        PlainText {
+          Layout.fillWidth: true
+          font.pixelSize: Style.font.body
+          text: {
+            var u = upRow.update
+            if (!u) return ""
+            if (u.kind === "os") return strings.t("updates.os").arg(u.count) + (u.security > 0 ? "  ·  " + strings.t("updates.security").arg(u.security) : "")
+            if (u.kind === "image") return u.container
+            return u.name
+          }
+        }
+        PlainText {
+          visible: text !== ""
+          Layout.fillWidth: true
+          color: root.dim
+          font.pixelSize: Style.font.caption
+          wrapMode: upRow.update && (upRow.update.kind === "os" || upRow.result.indexOf("error") === 0) ? Text.WordWrap : Text.NoWrap
+          maximumLineCount: 3
+          text: {
+            var u = upRow.update
+            if (!u) return ""
+            var prefix = lab.hosts.length > 1 && upRow.host ? upRow.host.name + "  ·  " : ""
+            if (u.kind === "os") {
+              var names = u.packages.slice(0, 8).map(function(p) { return p.name }).join(", ") + (u.packages.length > 8 ? "…" : "")
+              var old = u.listsAge > 3 * 86400 ? "  ·  " + strings.t("updates.listsOld").arg(Math.floor(u.listsAge / 86400)) : ""
+              return prefix + u.manager + "  ·  " + names + old
+            }
+            if (u.kind === "image") {
+              if (upRow.updating) return prefix + strings.t("docker.updating")
+              if (upRow.queued) return prefix + strings.t("docker.updateQueued")
+              if (upRow.result !== "") return prefix + (upRow.result === "updated" ? strings.t("docker.updated")
+                  : upRow.result === "uptodate" ? strings.t("docker.upToDate")
+                  : strings.t("docker.updateError." + upRow.result.split(" ")[1]) + (lab.updateDetail(u.hostKey, u.container) !== "" ? "  ·  " + lab.updateDetail(u.hostKey, u.container) : ""))
+              return prefix + (u.pulled ? strings.t("updates.pulled") + "  ·  " : "") + u.image
+            }
+            return prefix + (u.current !== "" ? u.current : "?") + "  →  " + (u.latest !== "" ? u.latest : strings.t("updates.newVersion"))
+          }
+        }
+      }
+      PanelActionButton {
+        visible: upRow.update !== null && upRow.update.kind === "os"
+        iconText: "󰆍"
+        tooltipText: strings.t("updates.upgradeOs")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        bordered: true
+        onClicked: if (root.watcher && upRow.host) root.watcher.upgradePackages(upRow.host.key)
+      }
+      PanelActionButton {
+        visible: upRow.isImage
+        iconText: upRow.armed ? "󰄬" : "󰇚"
+        tooltipText: upRow.armed ? strings.t("docker.updateConfirm") : strings.t("docker.update")
+        foreground: root.foreground
+        hoverColor: upRow.armed ? root.urgent : root.foreground
+        fontFamily: root.fontFamily
+        bordered: true
+        enabled: !upRow.updating && !upRow.queued
+        opacity: upRow.updating || upRow.queued ? 0.4 : 1
+        onClicked: {
+          if (!upRow.armed) { upRow.armed = true; upDisarm.restart(); return }
+          upRow.armed = false
+          lab.updateContainer(upRow.update.container, upRow.host)
+        }
+      }
+      PanelActionButton {
+        visible: upRow.update !== null && upRow.update.kind === "service" && upRow.update.url !== ""
+        iconText: "󰏌"
+        tooltipText: strings.t("action.openWeb")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: { lab.openUrl(upRow.update.url); root.close() }
+      }
+    }
+  }
+
+  component ContainerRow: CursorSurface {
+    id: row
+    property var container: null
+    readonly property bool running: container && container.state === "running"
+    readonly property bool busy: container && lab.pendingAction.split(":")[1] === container.name
+    readonly property bool updating: container !== null && lab.host !== null && lab.isUpdating(lab.host.key, container.name)
+    readonly property bool queued: container !== null && lab.host !== null && lab.isQueued(lab.host.key, container.name)
+    readonly property string updateResult: container && lab.host ? lab.updateResult(lab.host.key, container.name) : ""
+    readonly property bool hasUpdate: container !== null && root.hasImageUpdate(container.name)
+    // Recreating a container is disruptive: the first click arms, the second runs.
+    property bool armed: false
+    Timer { id: disarm; interval: 3000; onTriggered: row.armed = false }
+
+    foreground: root.foreground
+    hasCursor: rowHover.hovered
+    implicitHeight: rowLayout.implicitHeight + Style.spacing.rowPaddingX
+
+    HoverHandler { id: rowHover }
+
+    RowLayout {
+      id: rowLayout
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(6)
+      spacing: Style.space(8)
+
+      Rectangle {
+        Layout.alignment: Qt.AlignVCenter
+        width: Style.space(8)
+        height: width
+        radius: width / 2
+        color: row.running ? root.foreground : "transparent"
+        border.width: 1
+        border.color: row.container && /restarting|dead/.test(row.container.state) ? root.urgent : root.foreground
+        opacity: row.running ? 1 : 0.5
+      }
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+        PlainText {
+          Layout.fillWidth: true
+          text: row.container ? row.container.name : ""
+          font.pixelSize: Style.font.body
+          opacity: row.running ? 1 : 0.6
+        }
+        PlainText {
+          Layout.fillWidth: true
+          color: root.dim
+          font.pixelSize: Style.font.caption
+          text: {
+            if (!row.container) return ""
+            if (row.updating) return strings.t("docker.updating")
+            if (row.queued) return strings.t("docker.updateQueued")
+            var parts = [row.container.status]
+            if (row.hasUpdate && row.updateResult === "") parts.unshift("󰜷 " + strings.t("docker.updateAvailable"))
+            if (row.container.cpu !== "") parts.push(row.container.cpu)
+            if (row.container.mem !== "") parts.push(row.container.mem)
+            return parts.join("  ·  ")
+          }
+        }
+        PlainText {
+          Layout.fillWidth: true
+          color: root.dim
+          font.pixelSize: Style.font.caption
+          text: {
+            if (!row.container) return ""
+            if (root.dockerSort !== "created" || !(row.container.created > 0)) return row.container.image
+            return strings.t("docker.createdOn").arg(new Date(row.container.created).toLocaleDateString(Qt.locale(Commons.I18n.formatLocale), Locale.ShortFormat))
+                + "  ·  " + row.container.image
+          }
+        }
+        PlainText {
+          visible: row.updateResult !== ""
+          Layout.fillWidth: true
+          font.pixelSize: Style.font.caption
+          color: row.updateResult.indexOf("error") === 0 ? root.urgent : root.foreground
+          text: row.updateResult === "" ? ""
+              : row.updateResult === "updated" ? strings.t("docker.updated")
+              : row.updateResult === "uptodate" ? strings.t("docker.upToDate")
+              : strings.t("docker.updateError." + row.updateResult.split(" ")[1])
+        }
+        PlainText {
+          readonly property string detail: row.container && lab.host ? lab.updateDetail(lab.host.key, row.container.name) : ""
+          visible: detail !== "" && row.updateResult.indexOf("error") === 0
+          Layout.fillWidth: true
+          wrapMode: Text.WordWrap
+          maximumLineCount: 3
+          font.pixelSize: Style.font.caption
+          color: root.dim
+          text: detail
+        }
+      }
+
+      PanelActionButton {
+        iconText: row.running ? "󰓛" : "󰐊"
+        tooltipText: row.running ? strings.t("docker.stop") : strings.t("docker.start")
+        foreground: root.foreground
+        hoverColor: row.running ? root.urgent : root.foreground
+        fontFamily: root.fontFamily
+        enabled: !row.busy && lab.pendingAction === ""
+        onClicked: root.containerAction(row.running ? "stop" : "start", row.container.name)
+      }
+      PanelActionButton {
+        iconText: "󰜉"
+        tooltipText: strings.t("docker.restart")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        enabled: !row.busy && lab.pendingAction === ""
+        opacity: row.busy ? 0.4 : 1
+        onClicked: lab.containerAction("restart", row.container.name)
+      }
+      PanelActionButton {
+        iconText: row.armed ? "󰄬" : "󰇚"
+        tooltipText: row.armed ? strings.t("docker.updateConfirm") : (row.hasUpdate ? strings.t("docker.updateAvailable") + " · " : "") + strings.t("docker.update")
+        foreground: root.foreground
+        hoverColor: row.armed ? root.urgent : root.foreground
+        fontFamily: root.fontFamily
+        bordered: row.armed || (row.hasUpdate && !row.updating && !row.queued)
+        enabled: !row.updating && !row.queued
+        opacity: row.updating || row.queued ? 0.4 : 1
+        onClicked: {
+          if (!row.armed) { row.armed = true; disarm.restart(); return }
+          row.armed = false
+          disarm.stop()
+          lab.updateContainer(row.container.name)
+        }
+      }
+      PanelActionButton {
+        iconText: "󰈙"
+        tooltipText: strings.t("docker.logs")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: lab.openLogs(row.container.name)
+      }
+    }
+  }
+
+  component LinkRow: CursorSurface {
+    id: linkRow
+    property var link: null
+
+    foreground: root.foreground
+    hasCursor: linkMouse.containsMouse
+    implicitHeight: linkLayout.implicitHeight + Style.spacing.rowPaddingX
+
+    MouseArea {
+      id: linkMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: if (linkRow.link) { lab.openUrl(linkRow.link.url); root.close() }
+    }
+
+    RowLayout {
+      id: linkLayout
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(10)
+      spacing: Style.space(10)
+
+      PlainText {
+        text: linkRow.link && linkRow.link.icon !== "" ? linkRow.link.icon : "󰖟"
+        font.pixelSize: Style.font.icon
+        Layout.alignment: Qt.AlignVCenter
+      }
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+        PlainText {
+          Layout.fillWidth: true
+          text: linkRow.link ? linkRow.link.name : ""
+          font.pixelSize: Style.font.body
+        }
+        PlainText {
+          Layout.fillWidth: true
+          text: linkRow.link ? linkRow.link.url : ""
+          color: root.dim
+          font.pixelSize: Style.font.caption
+        }
+      }
+      PlainText {
+        text: "󰏌"
+        color: root.dim
+        font.pixelSize: Style.font.icon
+        Layout.alignment: Qt.AlignVCenter
+      }
+    }
+  }
+}

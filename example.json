@@ -1,0 +1,13 @@
+{
+  "hosts": [
+    {
+      "name": "Homelab",
+      "ssh": "user@192.168.1.10",
+      "port": 22,
+      "links": [
+        { "name": "Homepage", "url": "http://192.168.1.10:3000" },
+        { "name": "Portainer", "url": "https://192.168.1.10:9443" }
+      ]
+    }
+  ]
+}
