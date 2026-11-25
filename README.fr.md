@@ -10,6 +10,14 @@ vos serveurs homelab en SSH : rien à installer sur le serveur.
 - **Monitoring** : CPU, mémoire, swap, GPU (NVIDIA / AMD), chaque disque monté,
   capteurs de température, débit réseau, uptime, OS et noyau. Une section
   n'apparaît que si le matériel est présent.
+- **Proxmox VE** : sur un hôte Proxmox, un onglet Proxmox apparaît avec
+  chaque nœud, VM et conteneur LXC du cluster (état, CPU, mémoire, uptime,
+  tags), recherche et filtres, démarrage, extinction et redémarrage (second
+  clic pour confirmer), la console noVNC ou xterm.js dans le navigateur,
+  l'occupation des stockages et les tâches en échec des dernières 24 h. Les
+  alertes couvrent une VM ou un conteneur arrêté tout seul, un nœud hors
+  ligne, un stockage qui se remplit et une sauvegarde en échec. Les mises à
+  jour utilisent `apt full-upgrade`, comme Proxmox l'exige.
 - **Docker** : chaque conteneur avec son état, son CPU et sa mémoire ;
   démarrer, arrêter, redémarrer, suivre les logs dans un terminal, et mettre à
   jour (pull de l'image, puis recréation du conteneur via son projet Compose si
@@ -161,6 +169,27 @@ L'authentification doit fonctionner sans invite (clé SSH, agent), car le panel
 lance ssh avec `BatchMode=yes`. Le bouton SSH interactif n'a pas cette
 contrainte.
 
+### Proxmox VE
+
+L'onglet Proxmox apparaît tout seul quand l'hôte tourne sous Proxmox VE. Il
+lit le cluster de l'une de ces deux façons :
+
+- **Jeton API (recommandé)** : dans Proxmox, Datacenter › Permissions ›
+  API Tokens, créez un jeton, puis collez son ID (`user@realm!nom`) et son
+  secret dans l'onglet Proxmox (bouton clé). En lecture seule, donnez-lui le
+  rôle `PVEAuditor` sur `/` ; ajoutez `VM.PowerMgmt` pour démarrer et arrêter
+  les machines. Le jeton est stocké comme les autres secrets.
+- **SSH** : `pvesh` demande root, donc cela fonctionne si vous vous connectez
+  en root ou si l'utilisateur SSH a sudo sans mot de passe.
+
+L'API est jointe sur `https://<hôte>:8006`, avec le certificat auto-signé de
+Proxmox accepté. Vous pouvez la changer par hôte, ou désactiver l'onglet :
+
+```json
+"proxmox": { "url": "https://pve.exemple.lan:8006", "insecure": false }
+"proxmox": false
+```
+
 ### Réglages du widget
 
 | Réglage | Défaut | |
@@ -213,7 +242,7 @@ modifier le fichier compose.
 
 | Touche | Action |
 | --- | --- |
-| `h` / `l`, `←` / `→`, `1` – `4` | changer d'onglet |
+| `h` / `l`, `←` / `→`, `1` – `5` | changer d'onglet (5 avec l'onglet Proxmox) |
 | `[` / `]` | hôte précédent / suivant |
 | `s` ou `Entrée` | terminal SSH |
 | `r` | actualiser |
@@ -265,6 +294,7 @@ omarchy-shell dadoux01.homelab ssh
 omarchy-shell dadoux01.homelab refresh
 omarchy-shell dadoux01.homelab tab docker      # monitoring|docker|services|links|alerts
 omarchy-shell dadoux01.homelab service jellyfin
+omarchy-shell dadoux01.homelab host "Homelab"      # nom, clé ou index à partir de 1
 omarchy-shell dadoux01.homelab dockerFilter memory desc ""   # tri : name|created|cpu|memory
 ```
 

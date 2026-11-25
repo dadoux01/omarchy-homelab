@@ -1,5 +1,6 @@
 .pragma library
 .import "Model.js" as Model
+.import "Proxmox.js" as Proxmox
 
 // Alert rules for the background watcher. Pure functions: given what the
 // watcher last saw for a host, return the alerts active right now. Each alert
@@ -71,6 +72,9 @@ function evaluate(host, s, th, t) {
     for (var a = 0; a < (st.alerts || []).length; a++)
       add(st.alerts[a].level, "svc", id + "|" + st.alerts[a].key, st.alerts[a].title, st.alerts[a].body, "services")
   }
+
+  if (s.pve)
+    out = out.concat(Proxmox.alerts(host, s.pve, s.pveKnown || {}, s.pveExpected || {}, th, t))
 
   if (s.updates && s.updates.reboot)
     add("warning", "reboot", "", t("alert.reboot").arg(host.name), "", "alerts")

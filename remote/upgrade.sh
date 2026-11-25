@@ -9,7 +9,10 @@ fi
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
-if command -v apt-get >/dev/null 2>&1; then
+if [ -d /etc/pve ] && command -v apt-get >/dev/null 2>&1; then
+  # Proxmox VE must always be upgraded with full-upgrade (dist-upgrade).
+  step "apt (Proxmox VE)"; $S apt-get update && $S apt-get dist-upgrade
+elif command -v apt-get >/dev/null 2>&1; then
   step "apt"; $S apt-get update && $S apt-get --with-new-pkgs upgrade
 elif command -v dnf >/dev/null 2>&1; then
   step "dnf"; $S dnf upgrade --refresh

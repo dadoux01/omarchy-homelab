@@ -4,6 +4,7 @@ import Quickshell.Io
 import "Model.js" as Model
 import "Services.js" as Services
 import "Alerts.js" as Alerts
+import "Proxmox.js" as Proxmox
 
 // Background side of the plugin, loaded once by the shell as a `service`
 // (the bar widget exists once per screen; this does not). It watches every
@@ -88,7 +89,8 @@ Item {
   }
 
   function stateOf(key) {
-    return hostState[key] || { failures: 0, lastError: "", metrics: null, docker: null, running: {}, expectedStops: {}, services: {} }
+    return hostState[key] || { failures: 0, lastError: "", metrics: null, docker: null, running: {}, expectedStops: {}, services: {},
+                               pve: null, pveKnown: {}, pveExpected: {} }
   }
 
   function patchHost(key, patch) {
@@ -114,6 +116,14 @@ Item {
     var e = Object.assign({}, s.expectedStops)
     e[name] = Date.now()
     patchHost(hostKey, { expectedStops: e })
+  }
+
+  // A Proxmox guest shut down from the panel must not raise "stopped".
+  function expectPveStop(hostKey, key) {
+    var s = stateOf(hostKey)
+    var e = Object.assign({}, s.pveExpected || {})
+    e[key] = Date.now()
+    patchHost(hostKey, { pveExpected: e })
   }
 
   // An image update recreated the container: forget it until the next check.
@@ -212,13 +222,24 @@ Item {
     var key = host.key
     run("metrics:" + key, [helper, "metrics", host.target, String(host.port)], function(code, out, err) {
       if (code === 0) {
-        patchHost(key, { failures: 0, lastError: "", metrics: Model.parseMetrics(out) })
+        var metrics = Model.parseMetrics(out)
+        patchHost(key, { failures: 0, lastError: "", metrics: metrics })
         run("docker:" + key, [helper, "docker", host.target, String(host.port)], function(c2, out2) {
           var d = Model.parseDocker(out2)
           if (c2 !== 0 && d.error === "") d.error = "unreachable"
           trackRunning(key, d)
           evaluate(key)
         })
+        var pveOff = host.proxmox && host.proxmox.enabled === false
+        if (!pveOff && (metrics.pve || (host.proxmox && host.proxmox.enabled))) {
+          run("pve:" + key, [helper, "pve-read", host.target, String(host.port), secretsPath, key + "/proxmox",
+                             Proxmox.baseUrl(host), Proxmox.insecure(host) ? "1" : "0"], function(c3, out3) {
+            var pve = Proxmox.parse(out3)
+            if (c3 !== 0 && pve.error === "") pve.error = "noaccess"
+            trackPve(key, pve)
+            evaluate(key)
+          })
+        }
       } else {
         patchHost(key, { failures: stateOf(key).failures + 1, lastError: Model.clip(err || ("ssh exit " + code), 200) })
         evaluate(key)
@@ -244,6 +265,27 @@ Item {
       for (var e in expected) if (Date.now() - expected[e] > 3600000) delete expected[e]
     }
     patchHost(key, { docker: docker, running: running, expectedStops: expected })
+    saveState()
+  }
+
+  // Guests seen running stay "expected up" until they run again after a stop
+  // the user asked for, or disappear.
+  function trackPve(key, pve) {
+    var s = stateOf(key)
+    var known = Object.assign({}, s.pveKnown || {})
+    var expected = Object.assign({}, s.pveExpected || {})
+    if (pve.error === "") {
+      var present = {}
+      pve.guests.forEach(function(g) {
+        var k = g.node + "/" + g.type + "/" + g.vmid
+        present[k] = true
+        if (g.running) { known[k] = true; delete expected[k] }
+        else if (expected[k]) delete known[k]
+      })
+      for (var n in known) if (!present[n]) delete known[n]
+      for (var e in expected) if (Date.now() - expected[e] > 3600000) delete expected[e]
+    }
+    patchHost(key, { pve: pve, pveKnown: known, pveExpected: expected })
     saveState()
   }
 
@@ -391,9 +433,12 @@ Item {
     id: saveTimer
     interval: 1500
     onTriggered: {
-      var running = {}
-      for (var k in root.hostState) running[k] = root.hostState[k].running || {}
-      stateFile.setText(JSON.stringify({ version: 1, notified: root.notified, updates: root.updates, running: running }))
+      var running = {}, pveKnown = {}
+      for (var k in root.hostState) {
+        running[k] = root.hostState[k].running || {}
+        pveKnown[k] = root.hostState[k].pveKnown || {}
+      }
+      stateFile.setText(JSON.stringify({ version: 1, notified: root.notified, updates: root.updates, running: running, pveKnown: pveKnown }))
     }
   }
 
@@ -415,6 +460,7 @@ Item {
       updates = data.updates && typeof data.updates === "object" ? data.updates : {}
       var hs = {}
       for (var k in (data.running || {})) hs[k] = Object.assign(stateOf(k), { running: data.running[k] || {} })
+      for (var p in (data.pveKnown || {})) hs[p] = Object.assign(hs[p] || stateOf(p), { pveKnown: data.pveKnown[p] || {} })
       hostState = hs
     } catch (e) {}
     stateLoaded = true

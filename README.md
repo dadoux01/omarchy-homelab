@@ -10,6 +10,13 @@ your homelab hosts over plain SSH: nothing to install on the server.
 - **Monitoring**: CPU, memory, swap, GPU (NVIDIA / AMD), every mounted disk,
   temperature sensors, network throughput, uptime, OS and kernel. Sections only
   appear when the hardware is there.
+- **Proxmox VE**: on a Proxmox host a Proxmox tab appears with every node,
+  VM and LXC container of the cluster (status, CPU, memory, uptime, tags),
+  search and filters, start, shut down and reboot (second click to confirm),
+  the noVNC or xterm.js console in the browser, storage usage, and failed
+  tasks of the last 24 hours. Alerts cover a VM or container that stopped on
+  its own, a node going offline, a storage filling up and a failed backup.
+  Upgrades use `apt full-upgrade`, as Proxmox requires.
 - **Docker**: every container with state, CPU and memory; start, stop, restart,
   follow logs in a terminal, and update (pull the image, then recreate the
   container through its Compose project if the image changed; click twice to
@@ -153,6 +160,27 @@ line.
 Authentication must work without a prompt (SSH key, agent), because the panel
 runs ssh with `BatchMode=yes`. The interactive SSH button has no such limit.
 
+### Proxmox VE
+
+The Proxmox tab appears by itself when the host runs Proxmox VE. It reads
+the cluster in one of two ways:
+
+- **API token (recommended)**: in Proxmox, Datacenter › Permissions ›
+  API Tokens, create a token, then paste its ID (`user@realm!name`) and secret
+  in the Proxmox tab (key button). For read-only use give it the
+  `PVEAuditor` role on `/`; add `VM.PowerMgmt` to start and stop guests. The
+  token is stored like the other secrets.
+- **SSH**: `pvesh` needs root, so this works when you connect as root or the
+  SSH user has passwordless sudo.
+
+The API is reached at `https://<host>:8006` with Proxmox's self-signed
+certificate accepted. Override it per host, or turn the tab off:
+
+```json
+"proxmox": { "url": "https://pve.example.lan:8006", "insecure": false }
+"proxmox": false
+```
+
 ### Widget settings
 
 | Setting | Default | |
@@ -203,7 +231,7 @@ file.
 
 | Key | Action |
 | --- | --- |
-| `h` / `l`, `←` / `→`, `1` – `4` | switch tab |
+| `h` / `l`, `←` / `→`, `1` – `5` | switch tab (5 with the Proxmox tab) |
 | `[` / `]` | previous / next host |
 | `s` or `Enter` | SSH terminal |
 | `r` | refresh |
@@ -251,6 +279,7 @@ omarchy-shell dadoux01.homelab ssh
 omarchy-shell dadoux01.homelab refresh
 omarchy-shell dadoux01.homelab tab docker      # monitoring|docker|services|links|alerts
 omarchy-shell dadoux01.homelab service jellyfin
+omarchy-shell dadoux01.homelab host "Homelab"      # name, key or 1-based index
 omarchy-shell dadoux01.homelab dockerFilter memory desc ""   # sort: name|created|cpu|memory
 ```
 

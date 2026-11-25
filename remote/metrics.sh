@@ -58,4 +58,12 @@ for busy in /sys/class/drm/card*/device/gpu_busy_percent; do
 done
 
 command -v docker >/dev/null 2>&1 && echo "docker${T}1"
+# Proxmox VE host: version, and whether pvesh is usable over this SSH login.
+if [ -d /etc/pve ] && command -v pveversion >/dev/null 2>&1; then
+  if [ "$(id -u)" = 0 ]; then access=root
+  elif sudo -n true >/dev/null 2>&1; then access=sudo
+  else access=none
+  fi
+  echo "pve${T}$(pveversion 2>/dev/null | sed -n 's|^pve-manager/\([^/ ]*\).*|\1|p')${T}${access}"
+fi
 exit 0

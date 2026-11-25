@@ -7,6 +7,7 @@ import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 import "Services.js" as Services
+import "Proxmox.js" as Proxmox
 
 // Homelab bar widget: a server glyph in the bar that opens a panel with one
 // tab per concern (Monitoring, Docker, Links) for the selected host, plus a
@@ -24,7 +25,22 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property var fmt: Commons.I18n.formatNumber
 
-  readonly property var tabs: ["monitoring", "docker", "services", "links"]
+  // The Proxmox tab appears only for Proxmox VE hosts.
+  readonly property var tabs: lab.isPve ? ["monitoring", "proxmox", "docker", "services", "links"]
+                                        : ["monitoring", "docker", "services", "links"]
+  readonly property var tabMeta: ({
+    monitoring: { label: "tab.monitoring", icon: "󰄨" },
+    proxmox: { label: "tab.proxmox", icon: "󰒋" },
+    docker: { label: "tab.docker", icon: "󰡨" },
+    services: { label: "tab.services", icon: "󰒓" },
+    links: { label: "tab.links", icon: "󰖟" }
+  })
+
+  // Proxmox tab search / filter state.
+  property string pveQuery: ""
+  property string pveState: "all"          // all | running | stopped
+  property string pveKind: "all"           // all | qemu | lxc
+  property bool pveTokenOpen: false
 
   // The background watcher (Watcher.qml), loaded once by the shell as this
   // plugin's service. It may register after the bar, so keep looking.
@@ -85,6 +101,7 @@ Panel {
   Connections {
     target: lab
     function onContainerUpdated(hostKey, name) { if (root.watcher) root.watcher.containerUpdated(hostKey, name) }
+    function onPveGuestStopping(hostKey, key) { if (root.watcher) root.watcher.expectPveStop(hostKey, key) }
   }
   property bool inputFocused: false
 
@@ -98,6 +115,8 @@ Panel {
   property string tab: "monitoring"
 
   readonly property Item panelFlick: panel.loadedContent ? panel.loadedContent.panelFlick : null
+
+  onTabsChanged: if (tabs.indexOf(tab) < 0 && tab !== "alerts") tab = "monitoring"
 
   function selectTab(name) {
     if (tabs.indexOf(name) < 0 && name !== "alerts") return
@@ -166,6 +185,11 @@ Panel {
       return root.dockerSort + " " + (root.dockerDesc ? "desc" : "asc")
     }
     function dockerFilters(open: bool): void { root.dockerFiltersOpen = open }
+    function host(name: string): string {
+      for (var i = 0; i < lab.hosts.length; i++)
+        if (lab.hosts[i].name === name || lab.hosts[i].key === name || String(i + 1) === name) { lab.selectHost(i); return lab.hosts[i].name }
+      return "unknown host"
+    }
     function recheck(hostKey: string): string {
       if (!root.watcher) return "no watcher"
       root.watcher.checkPackages(hostKey)
@@ -215,10 +239,7 @@ Panel {
         if (t === "r" || t === "R") lab.refresh()
         else if (t === "s" || t === "S") lab.openShell()
         else if (t === "e" || t === "E") lab.editConfig()
-        else if (t === "1") root.selectTab("monitoring")
-        else if (t === "2") root.selectTab("docker")
-        else if (t === "3") root.selectTab("services")
-        else if (t === "4") root.selectTab("links")
+        else if (t >= "1" && t <= "9" && parseInt(t, 10) <= root.tabs.length) root.selectTab(root.tabs[parseInt(t, 10) - 1])
         else if (t === "a" || t === "A") root.selectTab("alerts")
         else if (t === "[") root.stepHost(-1)
         else if (t === "]") root.stepHost(1)
@@ -335,12 +356,12 @@ Panel {
 
           ButtonGroup {
             visible: lab.host !== null
-            options: [
-              { value: "monitoring", label: strings.t("tab.monitoring"), icon: "󰄨" },
-              { value: "docker", label: strings.t("tab.docker"), icon: "󰡨" },
-              { value: "services", label: strings.t("tab.services"), icon: "󰒓" },
-              { value: "links", label: strings.t("tab.links"), icon: "󰖟" }
-            ]
+            // With five tabs, only the selected one keeps its label.
+            options: root.tabs.map(function(id) {
+              var meta = root.tabMeta[id]
+              var compact = root.tabs.length > 4 && id !== root.tab
+              return { value: id, label: compact ? "" : strings.t(meta.label), icon: meta.icon, tooltip: strings.t(meta.label) }
+            })
             value: root.tab
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -635,6 +656,12 @@ Panel {
                 container: modelData
               }
             }
+          }
+
+          // ---------- Proxmox ----------
+          ProxmoxView {
+            visible: lab.host !== null && root.tab === "proxmox"
+            width: parent.width
           }
 
           // ---------- Alerts & updates ----------
@@ -1182,6 +1209,430 @@ Panel {
           enabled: svc.busyAction === ""
           onClicked: svc.runAction(modelData.id, itemRow.item)
         }
+      }
+    }
+  }
+
+  component ProxmoxView: Column {
+    id: px
+    readonly property var p: lab.pve
+    readonly property bool ok: p !== null && p.error === ""
+    readonly property var access: lab.metrics && lab.metrics.pve ? lab.metrics.pve.access : ""
+    readonly property bool showToken: root.pveTokenOpen || (p !== null && (p.error === "noaccess" || p.error === "auth"))
+    readonly property var shown: ok ? Proxmox.filterGuests(p.guests, root.pveQuery, root.pveState, root.pveKind) : []
+    readonly property int vmsRunning: ok ? p.guests.filter(function(g) { return g.type === "qemu" && g.running }).length : 0
+    readonly property int vms: ok ? p.guests.filter(function(g) { return g.type === "qemu" }).length : 0
+    readonly property int ctsRunning: ok ? p.guests.filter(function(g) { return g.type === "lxc" && g.running }).length : 0
+    readonly property int cts: ok ? p.guests.filter(function(g) { return g.type === "lxc" }).length : 0
+
+    spacing: Style.space(8)
+
+    // Header: version, transport, actions
+    RowLayout {
+      width: parent.width
+      spacing: Style.space(6)
+      PlainText {
+        Layout.fillWidth: true
+        color: root.dim
+        font.pixelSize: Style.font.caption
+        text: {
+          var parts = ["Proxmox VE" + (px.p && px.p.version ? " " + px.p.version : (lab.metrics && lab.metrics.pve ? " " + lab.metrics.pve.version : ""))]
+          if (px.p && px.p.via !== "") parts.push(strings.t("pve.via." + px.p.via))
+          if (lab.loadingPve) parts.push(strings.t("loading"))
+          else if (px.p) parts.push(root.ago(px.p.checkedAt))
+          return parts.join("  ·  ")
+        }
+      }
+      PanelActionButton {
+        iconText: "󰑐"
+        tooltipText: strings.t("action.refresh")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        enabled: !lab.loadingPve
+        onClicked: lab.refreshPve()
+      }
+      PanelActionButton {
+        iconText: "󰌆"
+        tooltipText: strings.t("pve.token")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        bordered: root.pveTokenOpen
+        onClicked: root.pveTokenOpen = !root.pveTokenOpen
+      }
+      PanelActionButton {
+        iconText: "󰏌"
+        tooltipText: strings.t("pve.openWeb")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        bordered: true
+        onClicked: { lab.openPveWeb(); root.close() }
+      }
+    }
+
+    PlainText {
+      visible: px.p === null && !lab.loadingPve
+      width: parent.width
+      color: root.dim
+      text: strings.t("loading")
+    }
+
+    // Access problems and API token form
+    PlainText {
+      visible: px.p !== null && px.p.error !== ""
+      width: parent.width
+      wrapMode: Text.WordWrap
+      color: root.urgent
+      text: px.p ? strings.t("pve.error." + px.p.error) : ""
+    }
+
+    Column {
+      visible: px.showToken
+      width: parent.width
+      spacing: Style.space(6)
+
+      PlainText {
+        width: parent.width
+        wrapMode: Text.WordWrap
+        color: root.dim
+        font.pixelSize: Style.font.caption
+        text: strings.t("pve.tokenHelp")
+      }
+      TextField {
+        id: pveTokenId
+        width: parent.width
+        placeholderText: strings.t("pve.tokenId")
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        foreground: root.foreground
+        horizontalPadding: Style.spacing.controlGap
+        verticalPadding: Style.spacing.controlPaddingY
+        onActiveFocusChanged: root.inputFocused = activeFocus
+        onAccepted: pveTokenSecret.forceActiveFocus()
+      }
+      TextField {
+        id: pveTokenSecret
+        width: parent.width
+        password: true
+        placeholderText: strings.t("pve.tokenSecret")
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        foreground: root.foreground
+        horizontalPadding: Style.spacing.controlGap
+        verticalPadding: Style.spacing.controlPaddingY
+        onActiveFocusChanged: root.inputFocused = activeFocus
+        onAccepted: px.saveToken()
+      }
+      Flow {
+        width: parent.width
+        spacing: Style.space(6)
+        Button {
+          text: strings.t("service.save")
+          iconText: "󰆓"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          bordered: true
+          onClicked: px.saveToken()
+        }
+        Button {
+          visible: px.p !== null && px.p.via === "token"
+          text: strings.t("pve.forgetToken")
+          iconText: "󰩺"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: { lab.forgetPveToken(); root.pveTokenOpen = false }
+        }
+      }
+      PlainText {
+        visible: lab.pveNotice !== ""
+        width: parent.width
+        wrapMode: Text.WordWrap
+        font.pixelSize: Style.font.caption
+        color: lab.pveNotice === "saved" ? root.foreground : root.urgent
+        text: lab.pveNotice === "saved" ? strings.t("notice.saved") : lab.pveNotice
+      }
+    }
+
+    function saveToken() {
+      if (pveTokenId.text.trim() === "" || pveTokenSecret.text.trim() === "") return
+      lab.savePveToken(pveTokenId.text, pveTokenSecret.text)
+      pveTokenSecret.text = ""
+      root.inputFocused = false
+      root.pveTokenOpen = false
+      if (panel.loadedContent) panel.loadedContent.forceActiveFocus()
+    }
+
+    Column {
+      visible: px.ok
+      width: parent.width
+      spacing: Style.space(8)
+
+      Flow {
+        width: parent.width
+        spacing: Style.space(8)
+        Chip { text: strings.t("pve.nodes") + "  " + (px.ok ? px.p.nodes.filter(function(n) { return n.online }).length + " / " + px.p.nodes.length : "") }
+        Chip { text: strings.t("pve.vms") + "  " + px.vmsRunning + " / " + px.vms }
+        Chip { text: strings.t("pve.cts") + "  " + px.ctsRunning + " / " + px.cts }
+        Chip { visible: px.ok && px.p.failedTasks.length > 0; hot: true; text: strings.t("pve.failedTasks") + "  " + (px.ok ? px.p.failedTasks.length : 0) }
+      }
+
+      PlainText {
+        visible: lab.pveActionError !== ""
+        width: parent.width
+        wrapMode: Text.WordWrap
+        color: root.urgent
+        font.pixelSize: Style.font.caption
+        text: lab.pveActionError
+      }
+
+      // Nodes
+      Repeater {
+        model: px.ok ? px.p.nodes : []
+        Meter {
+          required property var modelData
+          label: (modelData.online ? "" : "󰅚 ") + modelData.name
+          detail: modelData.online ? strings.t("pve.nodeDetail").arg(root.fmt(modelData.cpu * 100, 0)).arg(Model.duration(modelData.uptime)) : strings.t("pve.offline")
+          ratio: modelData.maxmem > 0 ? modelData.mem / modelData.maxmem : 0
+          value: Model.bytes(modelData.mem, root.fmt) + " / " + Model.bytes(modelData.maxmem, root.fmt)
+        }
+      }
+
+      PanelSeparator { foreground: root.foreground }
+
+      // Guests: search + filters
+      TextField {
+        width: parent.width
+        text: root.pveQuery
+        placeholderText: strings.t("pve.searchPlaceholder")
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        foreground: root.foreground
+        horizontalPadding: Style.spacing.controlGap
+        verticalPadding: Style.spacing.controlPaddingY
+        onTextChanged: if (text !== root.pveQuery) root.pveQuery = text
+        onActiveFocusChanged: root.inputFocused = activeFocus
+        Keys.onEscapePressed: {
+          if (text !== "") text = ""
+          else { focus = false; if (panel.loadedContent) panel.loadedContent.forceActiveFocus() }
+        }
+      }
+      Flow {
+        width: parent.width
+        spacing: Style.space(10)
+        ButtonGroup {
+          options: [
+            { value: "all", label: strings.t("docker.state.all") },
+            { value: "running", label: strings.t("docker.state.running") },
+            { value: "stopped", label: strings.t("docker.state.stopped") }
+          ]
+          value: root.pveState
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          focusable: false
+          onChanged: function(v) { root.pveState = v }
+        }
+        ButtonGroup {
+          options: [
+            { value: "all", label: strings.t("pve.kind.all") },
+            { value: "qemu", label: strings.t("pve.kind.qemu"), icon: "󰍹" },
+            { value: "lxc", label: strings.t("pve.kind.lxc"), icon: "󰆧" }
+          ]
+          value: root.pveKind
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          focusable: false
+          onChanged: function(v) { root.pveKind = v }
+        }
+      }
+
+      PlainText {
+        visible: px.ok && px.shown.length === 0
+        width: parent.width
+        color: root.dim
+        text: px.ok && px.p.guests.length === 0 ? strings.t("pve.noGuests") : strings.t("docker.noMatch")
+      }
+
+      Repeater {
+        model: px.shown
+        GuestRow {
+          required property var modelData
+          width: px.width
+          guest: modelData
+        }
+      }
+
+      // Storage
+      PanelSectionHeader {
+        visible: px.ok && px.p.storages.length > 0
+        text: strings.t("section.storage")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+      }
+      Repeater {
+        model: px.ok ? px.p.storages : []
+        Meter {
+          required property var modelData
+          label: modelData.storage
+          detail: (modelData.shared ? strings.t("pve.shared") : modelData.node) + (modelData.kind ? "  ·  " + modelData.kind : "")
+          ratio: modelData.used / modelData.total
+          value: Model.bytes(modelData.used, root.fmt) + " / " + Model.bytes(modelData.total, root.fmt)
+        }
+      }
+
+      // Failed tasks
+      PanelSectionHeader {
+        visible: px.ok && px.p.failedTasks.length > 0
+        text: strings.t("pve.failedTasksTitle")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+      }
+      Repeater {
+        model: px.ok ? px.p.failedTasks : []
+        Column {
+          required property var modelData
+          width: px.width
+          spacing: Style.space(1)
+          PlainText {
+            width: parent.width
+            color: modelData.type === "vzdump" ? root.urgent : root.foreground
+            text: (modelData.type === "vzdump" ? strings.t("pve.backup") : modelData.type) + (modelData.id ? "  ·  " + modelData.id : "") + "  ·  " + modelData.node
+          }
+          PlainText {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            maximumLineCount: 2
+            color: root.dim
+            font.pixelSize: Style.font.caption
+            text: modelData.status + "  ·  " + root.ago(modelData.endtime)
+          }
+        }
+      }
+    }
+  }
+
+  component GuestRow: CursorSurface {
+    id: gr
+    property var guest: null
+    readonly property string key: guest ? guest.node + "/" + guest.type + "/" + guest.vmid : ""
+    readonly property bool busy: lab.pvePending.indexOf(key + ":") === 0
+    property string armed: ""            // action waiting for its confirming second click
+    Timer { id: grDisarm; interval: 3000; onTriggered: gr.armed = "" }
+
+    function act(action) {
+      if (action === "start") { lab.pveAction(guest, "start"); return }
+      if (armed !== action) { armed = action; grDisarm.restart(); return }
+      armed = ""
+      grDisarm.stop()
+      lab.pveAction(guest, action)
+    }
+
+    foreground: root.foreground
+    hasCursor: grHover.hovered
+    implicitHeight: grLayout.implicitHeight + Style.spacing.rowPaddingX
+    opacity: busy ? 0.5 : 1
+    HoverHandler { id: grHover }
+
+    RowLayout {
+      id: grLayout
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(6)
+      spacing: Style.space(8)
+
+      PlainText {
+        Layout.alignment: Qt.AlignTop
+        text: gr.guest && gr.guest.type === "lxc" ? "󰆧" : "󰍹"
+        font.pixelSize: Style.font.icon
+        opacity: gr.guest && gr.guest.running ? 1 : 0.45
+      }
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+          PlainText {
+            Layout.fillWidth: true
+            text: gr.guest ? gr.guest.name : ""
+            font.pixelSize: Style.font.body
+            opacity: gr.guest && gr.guest.running ? 1 : 0.6
+          }
+          PlainText {
+            text: gr.guest ? "#" + gr.guest.vmid : ""
+            color: root.dim
+            font.pixelSize: Style.font.caption
+          }
+        }
+        PlainText {
+          Layout.fillWidth: true
+          color: root.dim
+          font.pixelSize: Style.font.caption
+          text: {
+            var g = gr.guest
+            if (!g) return ""
+            if (gr.busy) return strings.t("pve.working")
+            var parts = [strings.t("pve.status." + g.status) !== "pve.status." + g.status ? strings.t("pve.status." + g.status) : g.status]
+            if (lab.pve && lab.pve.nodes.length > 1) parts.push(g.node)
+            if (g.running) {
+              parts.push(Model.duration(g.uptime))
+              parts.push("CPU " + root.fmt(g.cpu * 100, 0) + " %")
+              if (g.maxmem > 0) parts.push(Model.bytesPair(g.mem, g.maxmem, root.fmt))
+            }
+            if (g.lock) parts.push("󰌾 " + g.lock)
+            return parts.join("  ·  ")
+          }
+        }
+        PlainText {
+          visible: text !== ""
+          Layout.fillWidth: true
+          color: root.dim
+          font.pixelSize: Style.font.caption
+          text: gr.armed !== "" ? strings.t("pve.confirm." + gr.armed)
+              : gr.guest && gr.guest.tags.length ? gr.guest.tags.map(function(t) { return "#" + t }).join(" ") : ""
+        }
+      }
+
+      PanelActionButton {
+        visible: gr.guest !== null && !gr.guest.running
+        iconText: "󰐊"
+        tooltipText: strings.t("docker.start")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        enabled: !gr.busy && lab.pvePending === ""
+        onClicked: gr.act("start")
+      }
+      PanelActionButton {
+        visible: gr.guest !== null && gr.guest.running
+        iconText: gr.armed === "shutdown" ? "󰄬" : "󰐥"
+        tooltipText: gr.armed === "shutdown" ? strings.t("pve.confirm.shutdown") : strings.t("pve.shutdown")
+        foreground: root.foreground
+        hoverColor: root.urgent
+        bordered: gr.armed === "shutdown"
+        fontFamily: root.fontFamily
+        enabled: !gr.busy && lab.pvePending === ""
+        onClicked: gr.act("shutdown")
+      }
+      PanelActionButton {
+        visible: gr.guest !== null && gr.guest.running
+        iconText: gr.armed === "reboot" ? "󰄬" : "󰜉"
+        tooltipText: gr.armed === "reboot" ? strings.t("pve.confirm.reboot") : strings.t("docker.restart")
+        foreground: root.foreground
+        hoverColor: root.urgent
+        bordered: gr.armed === "reboot"
+        fontFamily: root.fontFamily
+        enabled: !gr.busy && lab.pvePending === ""
+        onClicked: gr.act("reboot")
+      }
+      PanelActionButton {
+        iconText: "󰆍"
+        tooltipText: strings.t("pve.console")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: { lab.openPveConsole(gr.guest); root.close() }
       }
     }
   }

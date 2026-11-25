@@ -17,6 +17,10 @@
 #   homelab secret-set <secrets> <secret-id>     (one JSON object line on stdin)
 #   homelab secret-del <secrets> <secret-id>
 #   homelab fetch-key  <target> <port> <container> <secrets> <secret-id>   (*arr apps: reads ApiKey from config.xml)
+#   homelab pve-read   <target> <port> <secrets> <secret-id> <api-url> <insecure>
+#   homelab pve-action <target> <port> <secrets> <secret-id> <api-url> <insecure> <node> <qemu|lxc> <vmid> <action>
+#     Proxmox VE: through the API token stored under <secret-id> when there is
+#     one, otherwise pvesh over SSH (root or passwordless sudo).
 
 set -o pipefail
 
@@ -208,6 +212,67 @@ case $cmd in
     omarchy-shell -q dadoux01.homelab recheck "$target:$port"
     printf '\nPress Enter to close'
     read -r _
+    ;;
+  pve-read|pve-action)
+    file=${4:-} id=${5:-} base=${6:-} insecure=${7:-1}
+    secret_id_ok "$id" || die "invalid secret id"
+    [[ $base =~ ^https?://[][A-Za-z0-9._:%-]+/?$ ]] || die "invalid url"
+    if [[ $cmd == pve-action ]]; then
+      node=${8:-} kind=${9:-} vmid=${10:-} act=${11:-}
+      [[ $node =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$ ]] || die "invalid node"
+      [[ $kind =~ ^(qemu|lxc)$ ]] || die "invalid guest type"
+      [[ $vmid =~ ^[0-9]{1,9}$ ]] || die "invalid vmid"
+      [[ $act =~ ^(start|shutdown|stop|reboot|suspend|resume)$ ]] || die "invalid action"
+    fi
+    token_id="" token_secret=""
+    if [[ -r $file ]]; then
+      token_id=$(jq -r --arg id "$id" '.[$id].tokenId // empty' "$file" 2>/dev/null)
+      token_secret=$(jq -r --arg id "$id" '.[$id].secret // empty' "$file" 2>/dev/null)
+    fi
+    if [[ -n $token_id && -n $token_secret ]]; then
+      [[ $token_id =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+![A-Za-z0-9._-]+$ ]] || die "invalid token id (user@realm!name)"
+      [[ $token_secret =~ ^[A-Za-z0-9-]{8,128}$ ]] || die "invalid token secret"
+      tls=()
+      [[ $insecure == 1 ]] && tls=(-k)
+      pve_api() {   # method path -> JSON body on stdout, "HTTP nnn" on stderr
+        local method=$1 path=$2
+        curl -sS --max-time 20 --connect-timeout 5 "${tls[@]}" -X "$method" \
+          -K <(printf 'url = "%s"\nheader = "Authorization: PVEAPIToken=%s=%s"\n' "${base%/}/api2/json$path" "$token_id" "$token_secret") \
+          -w '%{stderr}HTTP %{http_code}\n' | head -c 8000000
+      }
+      if [[ $cmd == pve-action ]]; then
+        status=$(pve_api POST "/nodes/$node/$kind/$vmid/status/$act" 2>&1 >/dev/null | grep '^HTTP ' | tail -n 1)
+        [[ $status == "HTTP 200" ]] && exit 0
+        echo "Proxmox API answered ${status:-nothing}" >&2
+        exit 5
+      fi
+      errfile=$(mktemp) || exit 1
+      trap 'rm -f "$errfile"' EXIT
+      for section in resources:/cluster/resources tasks:/cluster/tasks version:/version; do
+        name=${section%%:*} path=${section#*:}
+        body=$(pve_api GET "$path" 2>"$errfile") || true
+        status=$(grep '^HTTP ' "$errfile" | tail -n 1)
+        case $status in
+          "HTTP 401"|"HTTP 403") echo "error	auth"; exit 5 ;;
+          "HTTP 200") ;;
+          *) echo "error	unreachable"; exit 5 ;;
+        esac
+        echo "== $name"
+        jq -c '.data' <<<"$body" 2>/dev/null || echo null
+      done
+      echo "via	token"
+      exit 0
+    fi
+    if [[ $cmd == pve-action ]]; then
+      { printf 'N=%s\nK=%s\nV=%s\nA=%s\n' "$node" "$kind" "$vmid" "$act"
+        echo 'if [ "$(id -u)" = 0 ]; then P=pvesh; elif sudo -n true >/dev/null 2>&1; then P="sudo -n pvesh"; else echo "no root or passwordless sudo for pvesh" >&2; exit 5; fi'
+        echo '$P create "/nodes/$N/$K/$V/status/$A" >/dev/null'
+      } | exec timeout 120 ssh "${batch[@]}" "$target" 'sh -s'
+    fi
+    timeout 60 ssh "${batch[@]}" "$target" 'sh -s' <"$here/remote/pve.sh"
+    rc=$?
+    [[ $rc == 0 ]] && echo "via	ssh"
+    exit "$rc"
     ;;
   fetch-key)
     name=${4:-} file=${5:-} id=${6:-}

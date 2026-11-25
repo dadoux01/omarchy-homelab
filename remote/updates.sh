@@ -99,9 +99,12 @@ check_apt() {
   fi
   age=0
   [ "$fresh" = 1 ] || age=$(mtime_age /var/lib/apt/periodic/update-success-stamp /var/cache/apt/pkgcache.bin /var/lib/apt/lists/partial)
-  # Same set as `apt upgrade`. "Inst name [current] (new origin [arch])".
+  # Same set as `apt upgrade`, or `apt full-upgrade` on Proxmox VE, which
+  # requires it. "Inst name [current] (new origin [arch])".
+  apt_cmd="--with-new-pkgs upgrade"
+  [ -d /etc/pve ] && apt_cmd="dist-upgrade"
   # shellcheck disable=SC2086
-  apt-get -s -o Debug::NoLocking=1 $apt_opts --with-new-pkgs upgrade 2>/dev/null \
+  apt-get -s -o Debug::NoLocking=1 $apt_opts $apt_cmd 2>/dev/null \
     | sed -n 's/^Inst \([^ ]*\) \(\[\([^]]*\)\] \)\{0,1\}(\([^ ]*\) \(.*\)$/\1\t\4\t\3\t\5/p' \
     | awk -F'\t' '{ print $1 "\t" $2 "\t" $3 "\t" ($4 ~ /[Ss]ecurity/ ? 1 : 0) }' \
     | emit apt "$age" "$fresh"

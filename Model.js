@@ -59,6 +59,17 @@ function parseServiceOverrides(raw) {
   return out
 }
 
+// "proxmox": false | true | { url, insecure } -> null (auto) or settings.
+function parseProxmox(raw) {
+  if (raw === false) return { enabled: false }
+  if (raw === true) return { enabled: true }
+  if (!raw || typeof raw !== "object") return null
+  var out = { enabled: raw.enabled !== false }
+  if (/^https?:\/\/[\][A-Za-z0-9._:%-]+\/?$/.test(String(raw.url || ""))) out.url = String(raw.url).replace(/\/+$/, "")
+  if (raw.insecure === false) out.insecure = false
+  return out
+}
+
 // Base URL for a service API: scheme, host, port and an optional plain path.
 function validServiceUrl(url) {
   return /^https?:\/\/[\][A-Za-z0-9._:%-]+(\/[A-Za-z0-9._~\/-]*)?$/.test(String(url || ""))
@@ -96,7 +107,8 @@ function parseConfig(text) {
       port: port,
       address: validAddress(h.address) ? String(h.address) : "",
       links: links,
-      services: parseServiceOverrides(h.services)
+      services: parseServiceOverrides(h.services),
+      proxmox: parseProxmox(h.proxmox)
     })
   }
   return result
@@ -131,7 +143,7 @@ function sensorName(chip, label) {
 function parseMetrics(text) {
   var m = {
     hostname: "", os: "", kernel: "", uptime: 0, load: [0, 0, 0], cpus: 0, cpuModel: "",
-    cpu: -1, mem: null, swap: null, disks: [], temps: [], gpus: [], net: null, docker: false
+    cpu: -1, mem: null, swap: null, disks: [], temps: [], gpus: [], net: null, docker: false, pve: null
   }
   var tempsByName = {}
   var lines = String(text || "").split("\n")
@@ -185,6 +197,7 @@ function parseMetrics(text) {
       break
     }
     case "docker": m.docker = true; break
+    case "pve": m.pve = { version: clip(f[1], 24), access: /^(root|sudo|none)$/.test(f[2]) ? f[2] : "none" }; break
     }
   }
   for (var key in tempsByName) m.temps.push({ name: key, value: tempsByName[key] })
@@ -282,6 +295,13 @@ function bytes(value, formatNumber) {
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
   var decimals = v >= 100 || i === 0 ? 0 : 1
   return (formatNumber ? formatNumber(v, decimals) : v.toFixed(decimals)) + " " + units[i]
+}
+
+// "1,8 / 4,0 GiB" when both share a unit, else "512 MiB / 4,0 GiB".
+function bytesPair(used, total, formatNumber) {
+  var a = bytes(used, formatNumber), b = bytes(total, formatNumber)
+  var ua = a.split(" ").pop(), ub = b.split(" ").pop()
+  return ua === ub ? a.slice(0, a.length - ua.length - 1) + " / " + b : a + " / " + b
 }
 
 function rate(value, formatNumber) {

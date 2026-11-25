@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import "Model.js" as Model
+import "Proxmox.js" as Proxmox
 
 // Owns the hosts file and every ssh round-trip. All remote work goes through
 // bin/homelab with argv arrays; the panel only reads the properties below.
@@ -45,6 +46,83 @@ Item {
   readonly property string hostError: host ? (errorCache[host.key] || "") : ""
   readonly property bool online: metrics !== null && hostError === ""
 
+  // ---------- Proxmox VE ----------
+  // A host is treated as Proxmox when its metrics report it (or the hosts
+  // file says "proxmox": true), unless "proxmox": false.
+  readonly property bool isPve: host !== null && !(host.proxmox && host.proxmox.enabled === false)
+      && ((metrics !== null && metrics.pve !== null) || (host.proxmox !== null && host.proxmox.enabled === true))
+  property var pveCache: ({})
+  readonly property var pve: host ? (pveCache[host.key] || null) : null
+  property bool loadingPve: false
+  property string pvePending: ""       // "<node>/<type>/<vmid>:<action>"
+  property string pveActionError: ""
+  property string pveNotice: ""
+  readonly property string pveSecretId: host ? host.key + "/proxmox" : ""
+
+  signal pveGuestStopping(string hostKey, string key)
+
+  function pveArgs(h) {
+    return [h.target, String(h.port), secretsPath, h.key + "/proxmox", Proxmox.baseUrl(h), Proxmox.insecure(h) ? "1" : "0"]
+  }
+
+  function refreshPve() {
+    if (!host || !isPve || pveProc.running) return
+    loadingPve = true
+    pveProc.hostKey = host.key
+    pveProc.command = [helper, "pve-read"].concat(pveArgs(host))
+    pveProc.running = true
+  }
+
+  function pveAction(guest, action) {
+    if (!host || pveActionProc.running || !guest) return
+    if (["start", "shutdown", "stop", "reboot"].indexOf(action) < 0) return
+    var key = guest.node + "/" + guest.type + "/" + guest.vmid
+    if (action === "shutdown" || action === "stop") pveGuestStopping(host.key, key)
+    pveActionError = ""
+    pvePending = key + ":" + action
+    pveActionProc.command = [helper, "pve-action"].concat(pveArgs(host), [guest.node, guest.type, String(guest.vmid), action])
+    pveActionProc.running = true
+  }
+
+  function openPveConsole(guest) {
+    if (host && guest) openUrl(Proxmox.consoleUrl(host, guest))
+  }
+
+  function openPveWeb() {
+    if (host) openUrl(Proxmox.baseUrl(host))
+  }
+
+  function savePveToken(tokenId, secret) {
+    if (!host) return
+    var p = secretProcComponent.createObject(root, {
+      command: [helper, "secret-set", secretsPath, pveSecretId],
+      payload: JSON.stringify({ tokenId: String(tokenId || "").trim(), secret: String(secret || "").trim() })
+    })
+    p.running = true
+  }
+
+  function forgetPveToken() {
+    if (!host) return
+    var p = secretProcComponent.createObject(root, { command: [helper, "secret-del", secretsPath, pveSecretId] })
+    p.running = true
+  }
+
+  Component {
+    id: secretProcComponent
+    Process {
+      id: sp
+      property string payload: ""
+      stdinEnabled: true
+      onStarted: { if (payload !== "") write(payload + "\n"); payload = "" }
+      stderr: StdioCollector { id: spErr; waitForEnd: true }
+      onExited: function(code) {
+        root.pveNotice = code === 0 ? "saved" : Model.clip(String(spErr.text || "").trim() || ("exit " + code), 200)
+        Qt.callLater(root.refreshPve)
+        sp.destroy(1000)
+      }
+    }
+  }
+
   property bool loadingMetrics: metricsProc.running
   property bool loadingDocker: dockerProc.running
   property string pendingAction: ""    // "<action>:<container>" while running
@@ -82,6 +160,7 @@ Item {
   function refresh() {
     refreshMetrics()
     refreshDocker()
+    refreshPve()
   }
 
   function refreshMetrics() {
@@ -186,7 +265,7 @@ Item {
     interval: Math.max(root.refreshMs * 3, 15000)
     repeat: true
     running: root.active && root.host !== null
-    onTriggered: root.refreshDocker()
+    onTriggered: { root.refreshDocker(); root.refreshPve() }
   }
 
   // Exit and stream-finished arrive in no guaranteed order, so each run
@@ -285,4 +364,47 @@ Item {
       root.nextUpdate()
     }
   }
+
+  Process {
+    id: pveProc
+    property string hostKey: ""
+    property int code: 0
+    property int pending: 0
+    property string out: ""
+    onRunningChanged: if (running) { pending = 2; out = "" }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: { pveProc.out = String(text || ""); pveProc.step() }
+    }
+    onExited: function(exitCode) { pveProc.code = exitCode; pveProc.step() }
+    function step() {
+      if (--pending > 0) return
+      var parsed = Proxmox.parse(out)
+      if (code !== 0 && parsed.error === "") parsed.error = code === 124 ? "unreachable" : "noaccess"
+      root.put("pveCache", hostKey, parsed)
+      root.loadingPve = false
+    }
+  }
+
+  Process {
+    id: pveActionProc
+    property int code: 0
+    property int pending: 0
+    property string err: ""
+    onRunningChanged: if (running) { pending = 2; err = "" }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: { pveActionProc.err = String(text || "").trim().split("\n").pop(); pveActionProc.step() }
+    }
+    onExited: function(exitCode) { pveActionProc.code = exitCode; pveActionProc.step() }
+    function step() {
+      if (--pending > 0) return
+      if (code !== 0) root.pveActionError = Model.clip(err || ("exit " + code), 200)
+      root.pvePending = ""
+      pveFollowUp.restart()
+    }
+  }
+
+  // Guests take a few seconds to change state; look again shortly after.
+  Timer { id: pveFollowUp; interval: 3000; onTriggered: root.refreshPve() }
 }
