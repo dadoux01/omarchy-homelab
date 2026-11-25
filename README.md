@@ -2,6 +2,8 @@
 
 **English** · [Français](README.fr.md)
 
+<p align="center"><img src="preview.png" alt="Homelab panel: monitoring tab" width="420"></p>
+
 A bar widget for the [Omarchy](https://omarchy.org) shell that keeps an eye on
 your homelab hosts over plain SSH: nothing to install on the server.
 

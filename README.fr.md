@@ -2,6 +2,8 @@
 
 [English](README.md) · **Français**
 
+<p align="center"><img src="preview.png" alt="Panel Homelab : onglet Monitoring" width="420"></p>
+
 Un widget de barre pour le shell d'[Omarchy](https://omarchy.org) qui surveille
 vos serveurs homelab en SSH : rien à installer sur le serveur.
 
