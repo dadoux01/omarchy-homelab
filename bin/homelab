@@ -13,12 +13,17 @@
 #   homelab shell    <target> <port>
 #   homelab logs     <target> <port> <container>
 #   homelab init     <config-path>
+#   homelab host-add <config-path> <name> <target> <port> [<node>/<qemu|lxc>/<vmid>]
+#   homelab ssh-key  <target> <port>       (terminal: creates a key if needed, then ssh-copy-id)
 #   homelab api      <secrets> <secret-id> <auth> <GET|POST> <base-url> <path> [insecure] [json-body]
 #   homelab secret-set <secrets> <secret-id>     (one JSON object line on stdin)
 #   homelab secret-del <secrets> <secret-id>
 #   homelab fetch-key  <target> <port> <container> <secrets> <secret-id>   (*arr apps: reads ApiKey from config.xml)
 #   homelab pve-read   <target> <port> <secrets> <secret-id> <api-url> <insecure>
 #   homelab pve-action <target> <port> <secrets> <secret-id> <api-url> <insecure> <node> <qemu|lxc> <vmid> <action>
+#   homelab pve-ip     <target> <port> <secrets> <secret-id> <api-url> <insecure> <node> <qemu|lxc> <vmid>
+#     (IPv4 addresses of a guest, one per line: LXC interfaces or the QEMU
+#     guest agent, then static addresses from the guest config)
 #     Proxmox VE: through the API token stored under <secret-id> when there is
 #     one, otherwise pvesh over SSH (root or passwordless sudo).
 
@@ -37,6 +42,40 @@ if [[ $cmd == init ]]; then
     mkdir -p "$(dirname "$config")" && cp "$here/example.json" "$config" || exit 1
   fi
   exec omarchy-launch-editor "$config"
+fi
+
+# Appends a host to the hosts file (atomic rename, mode kept). Exit 3 with
+# "exists" or "full" on stderr when it cannot.
+if [[ $cmd == host-add ]]; then
+  config=${2:-} name=${3:-} target=${4:-} port=${5:-22} guest=${6:-}
+  [[ -n $config ]] || die "missing config path"
+  [[ $target =~ ^[A-Za-z0-9][A-Za-z0-9_.@:%-]*$ ]] || die "invalid ssh target"
+  [[ $port =~ ^[0-9]{1,5}$ ]] && (( port > 0 && port < 65536 )) || die "invalid port"
+  [[ -z $guest || $guest =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,62}/(qemu|lxc)/[0-9]{1,9}$ ]] || die "invalid guest"
+  name=$(tr -d '\000-\037\177' <<<"$name")
+  name=${name:0:40}
+  [[ -n $name ]] || name=$target
+  dir=$(dirname "$config")
+  mkdir -p "$dir" || exit 1
+  [[ -s $config ]] || printf '{ "hosts": [] }\n' >"$config" || exit 1
+  tmp=$(mktemp "$dir/.homelab-hosts.XXXXXX") || exit 1
+  err=$(jq --arg n "$name" --arg t "$target" --argjson p "$port" --arg g "$guest" '
+    if type != "object" then error("json") else . end
+    | .hosts = (.hosts // [])
+    | if any(.hosts[]; ((.ssh // .host) == $t) and ((.port // 22 | tostring) == ($p | tostring))) then error("exists")
+      elif (.hosts | length) >= 16 then error("full")
+      else .hosts += [{ name: $n, ssh: $t }
+                      + (if $p != 22 then { port: $p } else {} end)
+                      + (if $g != "" then { proxmoxGuest: $g } else {} end)]
+      end' "$config" 2>&1 >"$tmp")
+  if [[ $? != 0 ]]; then
+    rm -f "$tmp"
+    case $err in *exists*) echo exists >&2 ;; *full*) echo full >&2 ;; *) echo json >&2 ;; esac
+    exit 3
+  fi
+  chmod --reference="$config" "$tmp" 2>/dev/null
+  mv -f "$tmp" "$config"
+  exit 0
 fi
 
 secret_id_ok() { [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9@._:%/-]{0,199}$ ]]; }
@@ -213,17 +252,34 @@ case $cmd in
     printf '\nPress Enter to close'
     read -r _
     ;;
-  pve-read|pve-action)
+  pve-read|pve-action|pve-ip)
     file=${4:-} id=${5:-} base=${6:-} insecure=${7:-1}
     secret_id_ok "$id" || die "invalid secret id"
     [[ $base =~ ^https?://[][A-Za-z0-9._:%-]+/?$ ]] || die "invalid url"
-    if [[ $cmd == pve-action ]]; then
+    if [[ $cmd != pve-read ]]; then
       node=${8:-} kind=${9:-} vmid=${10:-} act=${11:-}
       [[ $node =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$ ]] || die "invalid node"
       [[ $kind =~ ^(qemu|lxc)$ ]] || die "invalid guest type"
       [[ $vmid =~ ^[0-9]{1,9}$ ]] || die "invalid vmid"
-      [[ $act =~ ^(start|shutdown|stop|reboot|suspend|resume)$ ]] || die "invalid action"
+      [[ $cmd == pve-ip || $act =~ ^(start|shutdown|stop|reboot|suspend|resume)$ ]] || die "invalid action"
     fi
+    # Two JSON values on stdin (interfaces, config) -> usable IPv4 addresses,
+    # interfaces first, without loopback, link-local or container bridges.
+    guest_ips() {
+      jq -rs '
+        def skip: test("^(lo|docker|br-|veth|virbr|cni|flannel|tailscale|zt|wg|kube|cali|vxlan|podman)");
+        def v4: test("^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$") and (test("^(127[.]|169[.]254[.])") | not);
+        ((.[0] | if type == "object" then .result else . end | if type == "array" then . else [] end)
+          | map(select((.name // "") | skip | not)
+                | ((.inet // empty | split("/")[0]),
+                   (."ip-addresses"[]? | select(."ip-address-type" == "ipv4") | ."ip-address"))))
+        + ((.[1] | if type == "object" then . else {} end)
+          | [to_entries[] | select(.key | test("^(net|ipconfig)[0-9]+$")) | .value | tostring
+             | capture("ip=(?<ip>[0-9.]+)")? | .ip])
+        | map(select(type == "string" and v4))
+        | reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end)
+        | .[]'
+    }
     token_id="" token_secret=""
     if [[ -r $file ]]; then
       token_id=$(jq -r --arg id "$id" '.[$id].tokenId // empty' "$file" 2>/dev/null)
@@ -240,6 +296,14 @@ case $cmd in
           -K <(printf 'url = "%s"\nheader = "Authorization: PVEAPIToken=%s=%s"\n' "${base%/}/api2/json$path" "$token_id" "$token_secret") \
           -w '%{stderr}HTTP %{http_code}\n' | head -c 8000000
       }
+      if [[ $cmd == pve-ip ]]; then
+        if [[ $kind == lxc ]]; then ifaces=$(pve_api GET "/nodes/$node/lxc/$vmid/interfaces" 2>/dev/null | jq -c '.data' 2>/dev/null)
+        else ifaces=$(pve_api GET "/nodes/$node/qemu/$vmid/agent/network-get-interfaces" 2>/dev/null | jq -c '.data' 2>/dev/null)
+        fi
+        conf=$(pve_api GET "/nodes/$node/$kind/$vmid/config" 2>/dev/null | jq -c '.data' 2>/dev/null)
+        printf '%s\n%s\n' "${ifaces:-null}" "${conf:-null}" | guest_ips
+        exit 0
+      fi
       if [[ $cmd == pve-action ]]; then
         status=$(pve_api POST "/nodes/$node/$kind/$vmid/status/$act" 2>&1 >/dev/null | grep '^HTTP ' | tail -n 1)
         [[ $status == "HTTP 200" ]] && exit 0
@@ -261,6 +325,16 @@ case $cmd in
         jq -c '.data' <<<"$body" 2>/dev/null || echo null
       done
       echo "via	token"
+      exit 0
+    fi
+    if [[ $cmd == pve-ip ]]; then
+      out=$({ printf 'N=%s\nK=%s\nV=%s\n' "$node" "$kind" "$vmid"
+        echo 'if [ "$(id -u)" = 0 ]; then P=pvesh; elif sudo -n true >/dev/null 2>&1; then P="sudo -n pvesh"; else echo "no root or passwordless sudo for pvesh" >&2; exit 5; fi'
+        echo 'if [ "$K" = lxc ]; then $P get "/nodes/$N/lxc/$V/interfaces" --output-format json 2>/dev/null || echo null'
+        echo 'else $P get "/nodes/$N/qemu/$V/agent/network-get-interfaces" --output-format json 2>/dev/null || echo null; fi'
+        echo 'echo; $P get "/nodes/$N/$K/$V/config" --output-format json 2>/dev/null || echo null; echo'
+      } | timeout 30 ssh "${batch[@]}" "$target" 'sh -s') || exit $?
+      guest_ips <<<"$out"
       exit 0
     fi
     if [[ $cmd == pve-action ]]; then
@@ -287,6 +361,36 @@ case $cmd in
     ;;
   shell)
     terminal ssh -p "$port" "$target"
+    ;;
+  ssh-key)
+    terminal "$here/bin/homelab" ssh-key-run "$target" "$port"
+    ;;
+  ssh-key-run)
+    # Runs inside the terminal: the passwords asked here are typed by the
+    # user and never seen by the plugin.
+    key=""
+    for k in "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_ecdsa" "$HOME/.ssh/id_rsa"; do
+      [[ -f $k && -f $k.pub ]] && { key=$k; break; }
+    done
+    if [[ -z $key ]]; then
+      echo "No SSH key on this computer yet: creating ~/.ssh/id_ed25519."
+      mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+      key="$HOME/.ssh/id_ed25519"
+      ssh-keygen -t ed25519 -f "$key" || { printf '\nPress Enter to close'; read -r _; exit 1; }
+    fi
+    echo
+    echo "Installing ${key/#$HOME/\~}.pub on $target (its password is asked once)."
+    ssh-copy-id -i "$key.pub" -p "$port" "$target"
+    echo
+    if ssh -p "$port" -o BatchMode=yes -o ConnectTimeout=5 "$target" true 2>/dev/null; then
+      echo "Key login works. The Homelab panel can now reach $target."
+    else
+      echo "Key login still fails. On $target, check that sshd allows PubkeyAuthentication"
+      echo "and that ~/.ssh/authorized_keys is not group or world writable."
+    fi
+    omarchy-shell -q dadoux01.homelab refresh >/dev/null 2>&1
+    printf '\nPress Enter to close'
+    read -r _
     ;;
   logs)
     name=${4:-}

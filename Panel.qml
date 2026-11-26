@@ -41,6 +41,7 @@ Panel {
   property string pveState: "all"          // all | running | stopped
   property string pveKind: "all"           // all | qemu | lxc
   property bool pveTokenOpen: false
+  property string pveAddKey: ""            // guest whose "add as host" form is open
 
   // The background watcher (Watcher.qml), loaded once by the shell as this
   // plugin's service. It may register after the bar, so keep looking.
@@ -174,7 +175,7 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
-    function refresh(): string { lab.refresh(); return "ok" }
+    function refresh(): string { lab.refresh(); if (root.watcher) root.watcher.refreshNow(); return "ok" }
     function ssh(): string { lab.openShell(); return "ok" }
     function tab(name: string): string { root.selectTab(name); return root.tab }
     function dockerFilter(sort: string, order: string, query: string): string {
@@ -388,6 +389,28 @@ Panel {
               text: lab.hostError !== "" ? lab.hostError : strings.t("loading")
               color: lab.hostError !== "" ? root.urgent : root.dim
               wrapMode: Text.WordWrap
+            }
+
+            // Key login refused: offer to install the key from a terminal.
+            Column {
+              visible: monitoring.m === null && /permission denied|publickey|host key verification/i.test(lab.hostError)
+              width: parent.width
+              spacing: Style.space(6)
+              PlainText {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                color: root.dim
+                font.pixelSize: Style.font.caption
+                text: strings.t("host.sshKeyHelp")
+              }
+              Button {
+                text: strings.t("host.sshKey")
+                iconText: "󰌆"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                bordered: true
+                onClicked: { lab.setupSshKey(); root.close() }
+              }
             }
 
             Column {
@@ -1455,10 +1478,20 @@ Panel {
 
       Repeater {
         model: px.shown
-        GuestRow {
+        Column {
           required property var modelData
           width: px.width
-          guest: modelData
+          spacing: Style.space(4)
+          GuestRow {
+            width: parent.width
+            guest: modelData
+          }
+          Loader {
+            active: root.pveAddKey === lab.guestKey(modelData)
+            visible: active
+            width: parent.width
+            sourceComponent: GuestAddForm { guest: modelData }
+          }
         }
       }
 
@@ -1633,6 +1666,124 @@ Panel {
         foreground: root.foreground
         fontFamily: root.fontFamily
         onClicked: { lab.openPveConsole(gr.guest); root.close() }
+      }
+      PanelActionButton {
+        readonly property int hostIndex: gr.guest ? lab.hostIndexForGuest(gr.guest) : -1
+        visible: gr.guest !== null && (hostIndex >= 0 || gr.guest.running)
+        iconText: hostIndex >= 0 ? "󰁔" : "󰐕"
+        tooltipText: hostIndex >= 0 ? strings.t("pve.openHost") : strings.t("pve.addHost")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        bordered: root.pveAddKey === gr.key
+        onClicked: {
+          if (hostIndex >= 0) { lab.selectHost(hostIndex); root.selectTab("monitoring"); return }
+          if (root.pveAddKey === gr.key) { root.pveAddKey = ""; return }
+          root.pveAddKey = gr.key
+          lab.hostAddNotice = ""
+          if (lab.guestAddresses[gr.key] === undefined) lab.lookupGuestAddress(gr.guest)
+        }
+      }
+    }
+  }
+
+  // Adds a Proxmox guest to the hosts file, optionally installing the SSH
+  // key on it from a terminal right after.
+  component GuestAddForm: Column {
+    id: gf
+    property var guest: null
+    readonly property string key: lab.guestKey(guest)
+    readonly property var ips: lab.guestAddresses[key]
+    readonly property bool looking: lab.guestLookup === key
+    readonly property string user: guest && guest.type === "lxc" ? "root" : (Quickshell.env("USER") || "root")
+    property bool edited: false
+    spacing: Style.space(6)
+    leftPadding: Style.space(10)
+
+    function suggested() { return ips && ips.length > 0 ? user + "@" + ips[0] : "" }
+    onIpsChanged: if (!edited) gfTarget.text = suggested()
+    Component.onCompleted: { gfName.text = guest ? guest.name : ""; gfTarget.text = suggested() }
+
+    function submit(installKey) {
+      lab.addHost(gfName.text, gfTarget.text, 22, guest, installKey)
+    }
+
+    PlainText {
+      width: parent.width - gf.leftPadding
+      wrapMode: Text.WordWrap
+      color: root.dim
+      font.pixelSize: Style.font.caption
+      text: gf.looking ? strings.t("pve.add.lookup")
+          : gf.ips && gf.ips.length > 0 ? strings.t("pve.add.found").arg(gf.ips.join(", "))
+          : gf.ips ? strings.t("pve.add.none") : ""
+    }
+    TextField {
+      id: gfName
+      width: parent.width - gf.leftPadding
+      placeholderText: strings.t("pve.add.name")
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      foreground: root.foreground
+      horizontalPadding: Style.spacing.controlGap
+      verticalPadding: Style.spacing.controlPaddingY
+      onActiveFocusChanged: root.inputFocused = activeFocus
+      onAccepted: gfTarget.forceActiveFocus()
+    }
+    TextField {
+      id: gfTarget
+      width: parent.width - gf.leftPadding
+      placeholderText: strings.t("pve.add.target")
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      foreground: root.foreground
+      horizontalPadding: Style.spacing.controlGap
+      verticalPadding: Style.spacing.controlPaddingY
+      onTextEdited: gf.edited = true
+      onActiveFocusChanged: root.inputFocused = activeFocus
+      onAccepted: gf.submit(true)
+    }
+    PlainText {
+      width: parent.width - gf.leftPadding
+      wrapMode: Text.WordWrap
+      color: root.dim
+      font.pixelSize: Style.font.caption
+      text: strings.t("pve.add.help")
+    }
+    Flow {
+      width: parent.width - gf.leftPadding
+      spacing: Style.space(6)
+      Button {
+        text: strings.t("pve.add.withKey")
+        iconText: "󰌆"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        bordered: true
+        enabled: Model.validTarget(gfTarget.text.trim())
+        onClicked: gf.submit(true)
+      }
+      Button {
+        text: strings.t("pve.add.only")
+        iconText: "󰐕"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        enabled: Model.validTarget(gfTarget.text.trim())
+        onClicked: gf.submit(false)
+      }
+      Button {
+        text: strings.t("pve.add.cancel")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: { root.pveAddKey = ""; root.inputFocused = false }
+      }
+    }
+    PlainText {
+      visible: lab.hostAddNotice !== ""
+      width: parent.width - gf.leftPadding
+      wrapMode: Text.WordWrap
+      font.pixelSize: Style.font.caption
+      color: lab.hostAddNotice === "added" ? root.foreground : root.urgent
+      text: {
+        var n = lab.hostAddNotice
+        return /^(added|exists|full|json|target)$/.test(n) ? strings.t("pve.add." + n) : n
       }
     }
   }

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dadoux01.homelab",
   "name": "Homelab",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "dadoux01",
   "license": "MIT",
   "description": "Homelab assistant over SSH: hardware monitoring, Proxmox VE (VMs, containers, storage, backups), Docker containers, services (Jellyfin, Home Assistant, Prowlarr, Navidrome), alerts with desktop notifications, image and package update checks, links and a one-click SSH terminal.",

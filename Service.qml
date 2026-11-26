@@ -123,6 +123,86 @@ Item {
     }
   }
 
+  // ---------- adding Proxmox guests as hosts ----------
+
+  property string guestLookup: ""      // guest key while its address is looked up
+  property var guestAddresses: ({})    // guest key -> [ipv4…] (empty: none found)
+  property string hostAddNotice: ""    // "" | "added" | "exists" | "full" | "json" | error text
+
+  function guestKey(guest) { return guest ? guest.node + "/" + guest.type + "/" + guest.vmid : "" }
+
+  // Index of the configured host that runs in this guest, or -1: the one
+  // added from the Proxmox tab, else one whose address the lookup found.
+  function hostIndexForGuest(guest) {
+    var key = guestKey(guest)
+    var ips = guestAddresses[key] || []
+    for (var i = 0; i < hosts.length; i++) {
+      if (hosts[i].proxmoxGuest === key) return i
+      var t = hosts[i].target, addr = t.slice(t.lastIndexOf("@") + 1)
+      if (ips.indexOf(addr) >= 0 || (hosts[i].address !== "" && ips.indexOf(hosts[i].address) >= 0)) return i
+    }
+    return -1
+  }
+
+  function lookupGuestAddress(guest) {
+    if (!host || !guest || guestLookup !== "") return
+    var key = guestKey(guest)
+    guestLookup = key
+    hostAddNotice = ""
+    runJob([helper, "pve-ip"].concat(pveArgs(host), [guest.node, guest.type, String(guest.vmid)]), function(code, out) {
+      var ips = code === 0 ? String(out).split("\n").filter(function(l) { return Model.validAddress(l) }).slice(0, 8) : []
+      root.put("guestAddresses", key, ips)
+      root.guestLookup = ""
+    })
+  }
+
+  // installKey: then open a terminal that copies the SSH key to it.
+  function addHost(name, target, port, guest, installKey) {
+    target = String(target || "").trim()
+    if (!Model.validTarget(target)) { hostAddNotice = "target"; return }
+    port = parseInt(port, 10) || 22
+    hostAddNotice = ""
+    runJob([helper, "host-add", configPath, String(name || ""), target, String(port), guestKey(guest)], function(code, out, err) {
+      root.hostAddNotice = code === 0 ? "added" : (/^(exists|full|json)$/.test(err) ? err : Model.clip(err || ("exit " + code), 200))
+      if (code === 0) {
+        configFile.reload()
+        if (installKey) Quickshell.execDetached([helper, "ssh-key", target, String(port)])
+      }
+    })
+  }
+
+  function setupSshKey(h) {
+    var x = h || host
+    if (x) Quickshell.execDetached([helper, "ssh-key", x.target, String(x.port)])
+  }
+
+  Component {
+    id: jobComponent
+    Process {
+      id: job
+      property var done: null
+      property int pending: 3
+      property int code: 0
+      property string out: ""
+      property string err: ""
+      stdout: StdioCollector { waitForEnd: true; onStreamFinished: { job.out = String(text || ""); job.step() } }
+      stderr: StdioCollector { waitForEnd: true; onStreamFinished: { job.err = String(text || "").trim().split("\n").pop(); job.step() } }
+      onExited: function(exitCode) { job.code = exitCode; job.step() }
+      function step() {
+        if (--pending > 0) return
+        var cb = done
+        done = null
+        if (cb) cb(code, out, err)
+        job.destroy()
+      }
+    }
+  }
+
+  function runJob(command, cb) {
+    var p = jobComponent.createObject(root, { command: command, done: cb })
+    p.running = true
+  }
+
   property bool loadingMetrics: metricsProc.running
   property bool loadingDocker: dockerProc.running
   property string pendingAction: ""    // "<action>:<container>" while running

@@ -401,19 +401,44 @@ Item {
     updateList.forEach(function(u) { current[u.id] = true })
     for (var id in n) if (id.indexOf("|upd|") >= 0 && !current[id]) delete n[id]
     if (fresh.length > 0 && notifyUpdates) {
-      var images = fresh.filter(function(u) { return u.kind === "image" }).length
-      var os = fresh.filter(function(u) { return u.kind === "os" }).reduce(function(s, u) { return s + u.count }, 0)
-      var svcs = fresh.filter(function(u) { return u.kind === "service" })
-      var parts = []
-      if (images > 0) parts.push(t("notify.images").arg(images))
-      if (os > 0) parts.push(t("notify.packages").arg(os))
-      svcs.slice(0, 3).forEach(function(u) { parts.push(u.name + (u.latest ? " " + u.latest : "")) })
-      if (svcs.length > 3) parts.push("…")
-      notify("normal", t("notify.updatesTitle"), parts.join(" · "), "alerts")
+      // One line per host naming what changed, so nobody has to open every
+      // host to find out where the updates are.
+      var order = [], byHost = {}
+      fresh.forEach(function(u) {
+        if (!byHost[u.hostKey]) { byHost[u.hostKey] = []; order.push(u.hostKey) }
+        byHost[u.hostKey].push(u)
+      })
+      var lines = order.slice(0, 5).map(function(hk) {
+        var h = hostByKey(hk)
+        return (h ? h.name : hk) + ": " + updateSummary(byHost[hk])
+      })
+      if (order.length > 5) lines.push(t("notify.moreHosts").arg(order.length - 5))
+      var title = order.length === 1
+          ? t("notify.updatesOn").arg(hostByKey(order[0]) ? hostByKey(order[0]).name : order[0])
+          : t("notify.updatesTitle")
+      notify("normal", title, lines.join("\n"), "alerts")
     }
     fresh.forEach(function(u) { n[u.id] = Date.now() })
     notified = n
     saveState()
+  }
+
+  // "sonarr, radarr +2 · 12 packages · Jellyfin 10.10.3" for one host.
+  function updateSummary(items) {
+    var parts = []
+    var images = items.filter(function(u) { return u.kind === "image" }).map(function(u) { return u.container })
+    if (images.length > 0)
+      parts.push(images.slice(0, 4).join(", ") + (images.length > 4 ? " " + t("notify.more").arg(images.length - 4) : ""))
+    var os = items.filter(function(u) { return u.kind === "os" })
+    var count = os.reduce(function(s, u) { return s + u.count }, 0)
+    var security = os.reduce(function(s, u) { return s + u.security }, 0)
+    if (count > 0)
+      parts.push((count === 1 ? t("notify.package") : t("notify.packages").arg(count))
+                 + (security > 0 ? " (" + t("notify.security").arg(security) + ")" : ""))
+    var svcs = items.filter(function(u) { return u.kind === "service" })
+    svcs.slice(0, 3).forEach(function(u) { parts.push(u.name + (u.latest ? " " + u.latest : "")) })
+    if (svcs.length > 3) parts.push(t("notify.more").arg(svcs.length - 3))
+    return parts.join(" · ")
   }
 
   function notify(urgency, title, body, tab) {

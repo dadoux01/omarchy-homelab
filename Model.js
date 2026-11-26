@@ -108,7 +108,10 @@ function parseConfig(text) {
       address: validAddress(h.address) ? String(h.address) : "",
       links: links,
       services: parseServiceOverrides(h.services),
-      proxmox: parseProxmox(h.proxmox)
+      proxmox: parseProxmox(h.proxmox),
+      // "node/qemu|lxc/vmid" of the Proxmox guest this host runs in, when
+      // it was added from the Proxmox tab.
+      proxmoxGuest: /^[A-Za-z0-9][A-Za-z0-9.-]{0,62}\/(qemu|lxc)\/[0-9]{1,9}$/.test(String(h.proxmoxGuest || "")) ? String(h.proxmoxGuest) : ""
     })
   }
   return result

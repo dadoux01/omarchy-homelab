@@ -17,7 +17,11 @@ vos serveurs homelab en SSH : rien à installer sur le serveur.
   l'occupation des stockages et les tâches en échec des dernières 24 h. Les
   alertes couvrent une VM ou un conteneur arrêté tout seul, un nœud hors
   ligne, un stockage qui se remplit et une sauvegarde en échec. Les mises à
-  jour utilisent `apt full-upgrade`, comme Proxmox l'exige.
+  jour utilisent `apt full-upgrade`, comme Proxmox l'exige. Le bouton 󰐕
+  d'une VM ou d'un conteneur démarré l'ajoute comme hôte Homelab sans
+  éditer le JSON : l'adresse vient des interfaces LXC ou de l'agent invité
+  QEMU, et « Ajouter et installer la clé » ouvre un terminal qui lance
+  `ssh-copy-id` (en créant d'abord une clé si vous n'en avez pas).
 - **Docker** : chaque conteneur avec son état, son CPU et sa mémoire ;
   démarrer, arrêter, redémarrer, suivre les logs dans un terminal, et mettre à
   jour (pull de l'image, puis recréation du conteneur via son projet Compose si
@@ -69,6 +73,7 @@ vos serveurs homelab en SSH : rien à installer sur le serveur.
   dnf), et les services sont interrogés directement (entités `update` de Home
   Assistant, Jellyfin, Prowlarr). Mettez à jour une image ou toutes depuis le
   centre d'alertes, ou ouvrez un terminal qui lance la mise à jour système.
+  La notification nomme chaque hôte et les conteneurs ou paquets concernés.
 - **Liens** : raccourcis par hôte (Homepage, Portainer, Jellyfin…).
 - **Bouton SSH** : ouvre `ssh <hôte>` dans votre terminal par défaut.
 - Plusieurs hôtes, sélectionnables depuis le panel.

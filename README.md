@@ -16,7 +16,11 @@ your homelab hosts over plain SSH: nothing to install on the server.
   the noVNC or xterm.js console in the browser, storage usage, and failed
   tasks of the last 24 hours. Alerts cover a VM or container that stopped on
   its own, a node going offline, a storage filling up and a failed backup.
-  Upgrades use `apt full-upgrade`, as Proxmox requires.
+  Upgrades use `apt full-upgrade`, as Proxmox requires. The 󰐕 button on a
+  running VM or container adds it as a Homelab host without editing the
+  JSON: the address comes from the LXC interfaces or the QEMU guest agent,
+  and “Add and install key” opens a terminal that runs `ssh-copy-id` (and
+  creates a key first if you have none).
 - **Docker**: every container with state, CPU and memory; start, stop, restart,
   follow logs in a terminal, and update (pull the image, then recreate the
   container through its Compose project if the image changed; click twice to
@@ -63,6 +67,7 @@ your homelab hosts over plain SSH: nothing to install on the server.
   system packages (apt, pacman, dnf), and asks the services themselves (Home
   Assistant update entities, Jellyfin, Prowlarr). Update one image or all of
   them from the alert center, or open a terminal that runs the system upgrade.
+  The notification names each host and the containers or packages to update.
 - **Links**: per-host shortcuts (Homepage, Portainer, Jellyfin…).
 - **SSH button**: opens `ssh <host>` in your default terminal.
 - Several hosts, switchable from the panel.
