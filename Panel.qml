@@ -1321,8 +1321,29 @@ Panel {
             bordered: true
             enabled: svc.busyAction === ""
             opacity: svc.busyAction.indexOf(sv.service.key + "|" + modelData.id + "|") === 0 ? 0.5 : 1
-            onClicked: svc.runAction(modelData.id, null)
+            onClicked: svc.runAction(modelData.id, modelData)
           }
+        }
+      }
+
+      // Local filter (Home Assistant entities)
+      TextField {
+        id: filterField
+        visible: sv.cat !== null && sv.cat.filter === true
+        width: parent.width
+        placeholderText: sv.cat && sv.cat.filterPlaceholder ? strings.t(sv.cat.filterPlaceholder) : ""
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        foreground: root.foreground
+        horizontalPadding: Style.spacing.controlGap
+        verticalPadding: Style.spacing.controlPaddingY
+        onActiveFocusChanged: root.inputFocused = activeFocus
+        onTextChanged: filterDebounce.restart()
+        Keys.onEscapePressed: { if (text !== "") text = ""; else { focus = false; if (panel.loadedContent) panel.loadedContent.forceActiveFocus() } }
+        Timer { id: filterDebounce; interval: 200; onTriggered: svc.setFilter(filterField.text) }
+        Connections {
+          target: sv
+          function onServiceChanged() { filterField.text = svc.filter }
         }
       }
 
@@ -1408,7 +1429,9 @@ Panel {
   component ServiceItemRow: CursorSurface {
     id: itemRow
     property var item: null
-    readonly property bool busy: item !== null && svc.service !== null && svc.busyAction === svc.service.key + "|" + (item.actions.length ? item.actions[0].id : "") + "|" + item.id
+    readonly property bool busy: item !== null && svc.service !== null && svc.busyAction.indexOf(svc.service.key + "|") === 0
+                                 && svc.busyAction.slice(svc.busyAction.length - item.id.length - 1) === "|" + item.id
+    readonly property var slider: item && item.slider ? item.slider : null
 
     foreground: root.foreground
     hasCursor: itemMouse.containsMouse
@@ -1432,8 +1455,21 @@ Panel {
       anchors.rightMargin: Style.space(6)
       spacing: Style.space(8)
 
+      Image {
+        id: poster
+        visible: source != "" && status === Image.Ready
+        Layout.alignment: Qt.AlignVCenter
+        Layout.preferredWidth: Style.space(30)
+        Layout.preferredHeight: Style.space(44)
+        source: itemRow.item && itemRow.item.image ? itemRow.item.image : ""
+        sourceSize.height: 96
+        fillMode: Image.PreserveAspectCrop
+        asynchronous: true
+        cache: true
+      }
+
       Rectangle {
-        visible: itemRow.item !== null && itemRow.item.on !== undefined
+        visible: !poster.visible && itemRow.item !== null && itemRow.item.on !== undefined
         Layout.alignment: Qt.AlignVCenter
         width: Style.space(8)
         height: width
@@ -1453,34 +1489,60 @@ Panel {
             Layout.fillWidth: true
             text: itemRow.item ? itemRow.item.title : ""
             font.pixelSize: Style.font.body
+            elide: Text.ElideRight
           }
           PlainText {
             visible: text !== ""
             text: itemRow.item ? itemRow.item.meta : ""
-            color: root.dim
+            color: itemRow.item && itemRow.item.warn ? root.urgent : root.dim
             font.pixelSize: Style.font.caption
           }
         }
         PlainText {
           visible: text !== ""
           Layout.fillWidth: true
-          text: itemRow.item ? itemRow.item.subtitle : ""
-          color: root.dim
+          text: itemRow.item ? (itemRow.item.subtitle || "") : ""
+          color: itemRow.item && itemRow.item.warn ? root.urgent : root.dim
           font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
         }
         Rectangle {
           visible: itemRow.item !== null && itemRow.item.progress >= 0
           Layout.fillWidth: true
           Layout.topMargin: Style.space(2)
           height: Style.space(4)
-          radius: height / 2
+          radius: Style.cornerRadius > 0 ? height / 2 : 0
           color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
           Rectangle {
             width: parent.width * Math.max(0, Math.min(1, itemRow.item ? itemRow.item.progress : 0))
             height: parent.height
             radius: parent.radius
-            color: root.foreground
+            color: itemRow.item && itemRow.item.warn ? root.urgent : root.foreground
             opacity: 0.8
+          }
+        }
+        RowLayout {
+          visible: itemRow.slider !== null
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+          PanelSlider {
+            id: itemSlider
+            Layout.fillWidth: true
+            bar: root.bar
+            minimum: itemRow.slider ? itemRow.slider.min : 0
+            maximum: itemRow.slider ? itemRow.slider.max : 1
+            step: itemRow.slider ? itemRow.slider.step : 1
+            integer: itemRow.slider ? itemRow.slider.step >= 1 : true
+            value: itemRow.slider ? itemRow.slider.value : 0
+            enabled: svc.busyAction === ""
+            onReleased: function(v) { if (itemRow.slider) svc.runAction(itemRow.slider.id, itemRow.item, v) }
+          }
+          PlainText {
+            Layout.minimumWidth: Style.space(44)
+            horizontalAlignment: Text.AlignRight
+            color: root.dim
+            font.pixelSize: Style.font.caption
+            text: itemRow.slider ? root.fmt(itemSlider.liveValue, itemRow.slider.decimals || 0) + itemRow.slider.unit : ""
           }
         }
       }
@@ -1493,6 +1555,7 @@ Panel {
           tooltipText: modelData.tooltip
           foreground: root.foreground
           fontFamily: root.fontFamily
+          bordered: modelData.active === true
           enabled: svc.busyAction === ""
           onClicked: svc.runAction(modelData.id, itemRow.item)
         }

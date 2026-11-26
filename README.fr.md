@@ -31,15 +31,31 @@ vos serveurs homelab en SSH : rien à installer sur le serveur.
   ou sur `podman`.
 - **Services** : choisissez un service dans la liste déroulante pour le
   consulter et le piloter :
-  - **Home Assistant** : nombre d'entités, entités indisponibles, allumer ou
-    éteindre lumières, interrupteurs et ventilateurs, lancer scènes et scripts.
-  - **Jellyfin** : taille de la bibliothèque, qui regarde quoi (progression et
-    transcodage), tâches en cours, scan de la bibliothèque.
-  - **Prowlarr** : alertes de santé, état des indexeurs, test de tous les
+  - **Home Assistant** : entités regroupées par pièce (zones Home
+    Assistant), recherche dans toutes les entités, lumières avec variateur,
+    interrupteurs, ventilateurs avec vitesse, volets (ouvrir, arrêter,
+    fermer, position), thermostats (consigne et mode), lecteurs multimédia
+    (lecture/pause, précédent, suivant, volume), capteurs de température,
+    d'humidité, de porte et de mouvement, scènes et scripts.
+  - **Jellyfin** : taille de la bibliothèque, qui regarde quoi (affiche,
+    progression et transcodage) avec pause et arrêt, ajouts récents, tâches
+    planifiées avec « Lancer maintenant », scan de la bibliothèque.
+  - **Navidrome** : titres, état et date du dernier scan, lecture en cours,
+    albums récents, playlists, scan rapide ou complet.
+  - **Sonarr / Radarr** : file de téléchargement avec progression et
+    téléchargements bloqués, épisodes des 7 prochains jours ou prochaines
+    sorties de films, nombre de manquants, alertes de santé, recherche des
+    manquants, synchro RSS, actualisation.
+  - **Prowlarr** : alertes de santé, chaque indexeur avec activation et test
+    individuel, indexeurs en échec, historique récent, test de tous les
     indexeurs, recherche sur tous les indexeurs et envoi d'un résultat au
     client de téléchargement.
-  - **Navidrome** : nombre de titres et état du scan, lecture en cours, albums
-    récemment ajoutés, scan de la bibliothèque.
+  - **qBittorrent / Transmission** : débits, torrents avec progression,
+    vitesse et temps restant, suspendre et reprendre un torrent ou tous,
+    limites de vitesse alternatives.
+  - **Pi-hole (v6) / AdGuard Home** : requêtes, part bloquée, domaines et
+    clients les plus actifs, pause du blocage 5 minutes, désactivation ou
+    réactivation.
 - **Alertes et notifications** : une surveillance en arrière-plan contrôle
   chaque hôte même panel fermé, et envoie une notification de bureau par
   nouveau problème : hôte injoignable (et de retour), conteneur arrêté, qui
@@ -161,7 +177,9 @@ hôte :
 ```
 
 `address` remplace l'hôte SSH dans les URL détectées. `insecure` accepte un
-certificat auto-signé. `false` masque un service.
+certificat auto-signé. `false` masque un service. Clés : `homeassistant`,
+`jellyfin`, `navidrome`, `sonarr`, `radarr`, `prowlarr`, `qbittorrent`,
+`transmission`, `pihole`, `adguard`.
 
 Les identifiants se saisissent dans le panel (bouton clé) et sont stockés dans
 `~/.config/omarchy/homelab-secrets.json`, en mode 600, jamais dans

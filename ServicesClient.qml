@@ -43,11 +43,19 @@ Item {
   readonly property var catalog: service ? Services.CATALOG[service.id] : null
 
   function hasSecret(svc) {
-    if (!svc) return false
-    var have = secretFields[svc.key] || []
-    var fields = Services.CATALOG[svc.id].fields
-    for (var i = 0; i < fields.length; i++) if (have.indexOf(fields[i].key) < 0) return false
-    return true
+    return !!svc && Services.hasSecret(svc, secretFields[svc.key])
+  }
+
+  // Last raw answers per service, so a filter change re-parses without a fetch.
+  property var raw: ({})
+  property var filters: ({})
+  readonly property string filter: service ? (filters[service.key] || "") : ""
+
+  function setFilter(text) {
+    var svc = service
+    if (!svc) return
+    put("filters", svc.key, String(text || ""))
+    if (raw[svc.key]) put("views", svc.key, Services.parse(svc, raw[svc.key], root.translate, root.formatNumber, filters[svc.key]))
   }
 
   function put(name, key, value) {
@@ -109,32 +117,30 @@ Item {
     var left = steps.length
     put("loading", svc.key, true)
     steps.forEach(function(step) {
-      request(svc, "GET", step.path, null, function(res) {
+      request(svc, step.method || "GET", step.path, step.body === undefined ? null : step.body, function(res) {
         results[step.key] = res
         if (--left > 0) return
-        put("views", svc.key, Services.parse(svc, results, root.translate, root.formatNumber))
+        put("raw", svc.key, results)
+        put("views", svc.key, Services.parse(svc, results, root.translate, root.formatNumber, root.filters[svc.key]))
         put("loading", svc.key, undefined)
       })
     })
   }
 
-  function runAction(actionId, item) {
+  function runAction(actionId, item, value) {
     var svc = service
     if (!svc || busyAction !== "") return
     if (actionId === "open") {
       if (item && item.data && Model.validUrl(item.data.url)) Quickshell.execDetached(["xdg-open", item.data.url])
       return
     }
-    var spec = Services.actionRequest(svc, actionId, item)
+    var spec = Services.actionRequest(svc, actionId, item, value)
     if (!spec) return
     busyAction = svc.key + "|" + actionId + "|" + (item ? item.id : "")
     notice = ""
     request(svc, spec.method, spec.path, spec.body === undefined ? null : spec.body, function(res) {
       busyAction = ""
-      var ok = res.status >= 200 && res.status < 300
-      if (svc.id === "navidrome" && ok) {
-        try { ok = JSON.parse(res.body)["subsonic-response"].status === "ok" } catch (e) { ok = false }
-      }
+      var ok = res.status >= 200 && res.status < 300 && Services.actionOk(svc, res)
       noticeError = !ok
       notice = ok ? translate("notice.done") : translate("notice.failed").arg(res.status || res.error)
       noticeTimer.restart()

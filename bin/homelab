@@ -15,7 +15,7 @@
 #   homelab init     <config-path>
 #   homelab host-add <config-path> <name> <target> <port> [<node>/<qemu|lxc>/<vmid>]
 #   homelab ssh-key  <target> <port>       (terminal: creates a key if needed, then ssh-copy-id)
-#   homelab api      <secrets> <secret-id> <auth> <GET|POST> <base-url> <path> [insecure] [json-body]
+#   homelab api      <secrets> <secret-id> <auth> <GET|POST|PUT> <base-url> <path> [insecure] [body]
 #   homelab secret-set <secrets> <secret-id>     (one JSON object line on stdin)
 #   homelab secret-del <secrets> <secret-id>
 #   homelab fetch-key  <target> <port> <container> <secrets> <secret-id>   (*arr apps: reads ApiKey from config.xml)
@@ -116,59 +116,149 @@ fi
 if [[ $cmd == api ]]; then
   file=${2:-} id=${3:-} auth=${4:-} method=${5:-} base=${6:-} path=${7:-} insecure=${8:-0} body=${9:-}
   secret_id_ok "$id" || die "invalid secret id"
-  [[ $auth =~ ^(none|apikey|bearer|mediabrowser|subsonic)$ ]] || die "invalid auth"
-  [[ $method =~ ^(GET|POST)$ ]] || die "invalid method"
+  [[ $auth =~ ^(none|apikey|bearer|mediabrowser|subsonic|basic|pihole|qbittorrent|transmission)$ ]] || die "invalid auth"
+  [[ $method =~ ^(GET|POST|PUT)$ ]] || die "invalid method"
   [[ $base =~ ^https?://[][A-Za-z0-9._:%-]+(/[A-Za-z0-9._~/-]*)?$ ]] || die "invalid url"
   [[ $path =~ ^/[A-Za-z0-9/_.~?=\&%:,+*-]*$ ]] || die "invalid path"
 
   field() { [[ -r $file ]] && jq -r --arg id "$id" --arg f "$1" '.[$id][$f] // empty' "$file" 2>/dev/null; }
-  url="${base%/}$path"
-  header=""
+  missing() { echo "HTTP 0 missing-secret" >&2; exit 4; }
+  base=${base%/}
+  url="$base$path"
+  headers=()
+  ctype="application/json"
+  [[ $auth == qbittorrent ]] && ctype="application/x-www-form-urlencoded"
+
+  # Session tokens (Pi-hole sid, qBittorrent cookie, Transmission session id)
+  # are cached per service in the user's runtime dir, mode 600.
+  umask 077
+  state=${XDG_RUNTIME_DIR:-/tmp}/omarchy-homelab-$UID
+  mkdir -p "$state" || exit 1
+  cache=$state/$(printf '%s|%s' "$id" "$base" | md5sum | cut -c1-20)
+  work=$(mktemp -d "$state/req.XXXXXX") || exit 1
+  trap 'rm -rf "$work"' EXIT
+
+  # Indexer searches and tests fan out to remote sites and can take a while.
+  max_time=15
+  [[ $path == /api/v1/search* || $path == /api/v1/indexer/test* ]] && max_time=90
+
+  # Secrets reach curl through a config on a pipe, never argv.
+  config() {
+    printf 'url = "%s"\n' "$1"
+    local h
+    for h in "${headers[@]}"; do printf 'header = "%s"\n' "$h"; done
+    printf 'header = "Accept: application/json"\n'
+    [[ $2 != GET ]] && printf 'header = "Content-Type: %s"\n' "$ctype"
+  }
+  # call <method> <url> [stdin body] -> $code, $rc; body in $work/body, headers in $work/hdr
+  call() {
+    local a=(-sS --max-time "$max_time" --connect-timeout 5 -X "$1" -o "$work/body" -D "$work/hdr" -w '%{http_code}')
+    [[ $insecure == 1 ]] && a+=(-k)
+    [[ -n ${jar:-} ]] && a+=(-b "$jar" -c "$jar")
+    if [[ $1 == GET ]]; then
+      code=$(curl "${a[@]}" -K <(config "$2" "$1") </dev/null)
+    else
+      code=$(curl "${a[@]}" -K <(config "$2" "$1") --data-binary @-)
+    fi
+    rc=$?
+    [[ $code =~ ^[0-9]{3}$ ]] || code=000
+  }
+  send() { if [[ $method == GET ]]; then call GET "$url"; else printf '%s' "$body" | call "$method" "$url"; fi; }
+
   case $auth in
     apikey|bearer|mediabrowser)
       key=$(field apiKey)
-      [[ -n $key ]] || { echo "HTTP 0 missing-secret" >&2; exit 4; }
+      [[ -n $key ]] || missing
       # Tokens are header values: refuse anything that could break out of one.
       [[ $key =~ ^[A-Za-z0-9._~+/=-]{8,4096}$ ]] || die "invalid key characters"
       case $auth in
-        apikey) header="X-Api-Key: $key" ;;
-        bearer) header="Authorization: Bearer $key" ;;
-        mediabrowser) header="Authorization: MediaBrowser Client=\\\"Omarchy Homelab\\\", Device=\\\"Omarchy\\\", DeviceId=\\\"omarchy-homelab\\\", Version=\\\"1.0\\\", Token=\\\"$key\\\"" ;;
+        apikey) headers=("X-Api-Key: $key") ;;
+        bearer) headers=("Authorization: Bearer $key") ;;
+        mediabrowser) headers=("Authorization: MediaBrowser Client=\\\"Omarchy Homelab\\\", Device=\\\"Omarchy\\\", DeviceId=\\\"omarchy-homelab\\\", Version=\\\"1.0\\\", Token=\\\"$key\\\"") ;;
       esac
+      send
       ;;
     subsonic)
       user=$(field username) pass=$(field password)
-      [[ -n $user && -n $pass ]] || { echo "HTTP 0 missing-secret" >&2; exit 4; }
+      [[ -n $user && -n $pass ]] || missing
       salt=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
       token=$(printf '%s%s' "$pass" "$salt" | md5sum | cut -d' ' -f1)
       u=$(jq -rn --arg v "$user" '$v | @uri')
       [[ $url == *\?* ]] && sep='&' || sep='?'
       url="$url${sep}u=$u&t=$token&s=$salt&v=1.16.1&c=omarchy-homelab&f=json"
+      send
+      ;;
+    basic|transmission)
+      # user:password, base64 by jq straight from the secrets file.
+      cred=""
+      [[ -n $(field username) ]] && cred=$(jq -r --arg id "$id" '.[$id] | "\(.username // ""):\(.password // "")" | @base64' "$file")
+      [[ $auth == basic && -z $cred ]] && missing
+      [[ -n $cred ]] && headers=("Authorization: Basic $cred")
+      if [[ $auth == transmission ]]; then
+        # Transmission answers 409 with the session id to use; cache it.
+        tsid=$(cat "$cache.tsid" 2>/dev/null)
+        [[ $tsid =~ ^[A-Za-z0-9]{1,128}$ ]] && headers+=("X-Transmission-Session-Id: $tsid")
+        send
+        if [[ $code == 409 ]]; then
+          tsid=$(tr -d '\r' <"$work/hdr" | sed -n 's/^[Xx]-[Tt]ransmission-[Ss]ession-[Ii]d: *//p' | tail -n1)
+          [[ $tsid =~ ^[A-Za-z0-9]{1,128}$ ]] || die "no Transmission session id"
+          printf '%s' "$tsid" >"$cache.tsid"
+          headers=()
+          [[ -n $cred ]] && headers=("Authorization: Basic $cred")
+          headers+=("X-Transmission-Session-Id: $tsid")
+          send
+        fi
+      else
+        send
+      fi
+      ;;
+    pihole)
+      # Pi-hole v6: POST /api/auth once, reuse the session id until it expires.
+      [[ -n $(field password) ]] || missing
+      login() {
+        headers=()
+        jq -c --arg id "$id" '{password: (.[$id].password // "")}' "$file" | call POST "$base/api/auth"
+        [[ $code == 200 ]] || { echo "HTTP ${code/000/0}" >&2; exit 0; }
+        sid=$(jq -r 'if .session.valid then (.session.sid // "none") else "" end' "$work/body" 2>/dev/null)
+        [[ $sid =~ ^[A-Za-z0-9+/=]{1,256}$ ]] || { echo "HTTP 401" >&2; exit 0; }
+        printf '%s' "$sid" >"$cache.sid"
+      }
+      sid=$(cat "$cache.sid" 2>/dev/null)
+      [[ $sid =~ ^[A-Za-z0-9+/=]{1,256}$ ]] || login
+      [[ $sid != none ]] && headers=("X-FTL-SID: $sid")
+      send
+      if [[ $code == 401 ]]; then
+        login
+        headers=()
+        [[ $sid != none ]] && headers=("X-FTL-SID: $sid")
+        send
+      fi
+      ;;
+    qbittorrent)
+      # Cookie session; log in again when it is refused.
+      jar=$cache.jar
+      [[ -e $jar ]] || : >"$jar"
+      send
+      if [[ $code == 403 ]]; then
+        user=$(field username)
+        [[ -n $user ]] || missing
+        jq -r --arg id "$id" '.[$id] | "username=\(.username // "" | @uri)&password=\(.password // "" | @uri)"' "$file" \
+          | call POST "$base/api/v2/auth/login"
+        if [[ $code != 200 ]] || [[ $(head -c 16 "$work/body") != Ok.* ]]; then
+          [[ $code == 000 ]] && echo "HTTP 0" >&2 || echo "HTTP 401" >&2
+          exit 0
+        fi
+        send
+      fi
+      ;;
+    none)
+      send
       ;;
   esac
 
-  # Secrets reach curl through a config on a pipe, never argv.
-  config() {
-    printf 'url = "%s"\n' "$url"
-    [[ -n $header ]] && printf 'header = "%s"\n' "$header"
-    printf 'header = "Accept: application/json"\n'
-    if [[ $method == POST ]]; then
-      printf 'header = "Content-Type: application/json"\n'
-    fi
-  }
-  # Indexer searches fan out to every indexer and can take a while.
-  max_time=15
-  [[ $path == /api/v1/search* ]] && max_time=90
-  args=(-sS --max-time "$max_time" --connect-timeout 5 -X "$method" -w '%{stderr}HTTP %{http_code}\n')
-  [[ $insecure == 1 ]] && args+=(-k)
-  if [[ $method == POST ]]; then
-    printf '%s' "${body:-}" | curl "${args[@]}" -K <(config) --data-binary @- | head -c 8000000
-    status=${PIPESTATUS[1]}
-  else
-    curl "${args[@]}" -K <(config) | head -c 8000000
-    status=${PIPESTATUS[0]}
-  fi
-  exit "$status"
+  head -c 8000000 "$work/body" 2>/dev/null
+  echo "HTTP ${code/000/0}" >&2
+  exit "$rc"
 fi
 
 if [[ $cmd == notify ]]; then

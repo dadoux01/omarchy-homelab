@@ -299,7 +299,7 @@ Item {
       var results = {}
       var left = steps.length
       steps.forEach(function(step) {
-        api.request(svc, "GET", step.path, null, function(res) {
+        api.request(svc, step.method || "GET", step.path, step.body === undefined ? null : step.body, function(res) {
           results[step.key] = res
           if (--left > 0) return
           var probe = Services.parseProbe(svc, results, root.t)
@@ -315,10 +315,7 @@ Item {
   }
 
   function hasSecret(svc) {
-    var have = api.secretFields[svc.key] || []
-    var fields = Services.CATALOG[svc.id].fields
-    for (var i = 0; i < fields.length; i++) if (have.indexOf(fields[i].key) < 0) return false
-    return true
+    return Services.hasSecret(svc, api.secretFields[svc.key])
   }
 
   function runUpdates(host) {

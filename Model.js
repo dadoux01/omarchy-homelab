@@ -36,7 +36,7 @@ function validAddress(addr) {
   return /^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$/.test(String(addr || ""))
 }
 
-var SERVICE_IDS = ["jellyfin", "homeassistant", "prowlarr", "navidrome"]
+var SERVICE_IDS = ["jellyfin", "homeassistant", "prowlarr", "navidrome", "sonarr", "radarr", "qbittorrent", "transmission", "pihole", "adguard"]
 
 // "services": { "<id>": { url, enabled, insecure, container, entities } }
 function parseServiceOverrides(raw) {

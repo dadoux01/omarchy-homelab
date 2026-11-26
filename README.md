@@ -29,14 +29,28 @@ your homelab hosts over plain SSH: nothing to install on the server.
   containers, or only those with an update. Falls back to passwordless `sudo docker` or
   `podman`.
 - **Services**: pick a service from a dropdown to see and drive it:
-  - **Home Assistant**: entity count, unavailable entities, toggle lights,
-    switches and fans, run scenes and scripts.
-  - **Jellyfin**: library counts, who is watching what (with progress and
-    transcoding), running tasks, library scan.
-  - **Prowlarr**: health warnings, indexer status, test all indexers, search
-    every indexer and send a release to your download client.
-  - **Navidrome**: songs and scan state, now playing, recently added albums,
-    library scan.
+  - **Home Assistant**: entities grouped by room (Home Assistant areas),
+    search across every entity, lights with a brightness slider, switches,
+    fans with speed, covers (open, stop, close, position), thermostats
+    (target temperature and mode), media players (play/pause, previous,
+    next, volume), temperature, humidity, door and motion sensors, scenes
+    and scripts.
+  - **Jellyfin**: library counts, who is watching what (with poster,
+    progress and transcoding) with pause and stop, recently added items,
+    scheduled tasks with "run now", library scan.
+  - **Navidrome**: songs, scan state and last scan, now playing, recently
+    added albums, playlists, quick or full library scan.
+  - **Sonarr / Radarr**: download queue with progress and stuck downloads,
+    episodes airing in the next 7 days or upcoming movie releases, missing
+    count, health warnings, search missing, RSS sync, refresh.
+  - **Prowlarr**: health warnings, every indexer with enable/disable and a
+    per-indexer test, failing indexers, recent history, test all indexers,
+    search every indexer and send a release to your download client.
+  - **qBittorrent / Transmission**: speeds, torrents with progress, speed
+    and time left, pause and resume one or all, alternative speed limits.
+  - **Pi-hole (v6) / AdGuard Home**: queries, blocked share, top blocked
+    domains and clients, pause blocking for 5 minutes, disable or re-enable
+    it.
 - **Alerts and notifications**: a background watcher checks every host even
   while the panel is closed, and sends one desktop notification per new
   problem: host unreachable (and back online), container stopped, crashing or
@@ -153,7 +167,9 @@ back to port 8123. Override or add them per host:
 ```
 
 `address` replaces the SSH host in detected URLs. `insecure` accepts a
-self-signed certificate. `false` hides a service.
+self-signed certificate. `false` hides a service. Keys: `homeassistant`,
+`jellyfin`, `navidrome`, `sonarr`, `radarr`, `prowlarr`, `qbittorrent`,
+`transmission`, `pihole`, `adguard`.
 
 Credentials are entered in the panel (key button) and stored in
 `~/.config/omarchy/homelab-secrets.json`, mode 600, never in `homelab.json`.
