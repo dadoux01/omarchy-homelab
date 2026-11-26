@@ -22,7 +22,7 @@ var ICON = {
   grab: "󰇚", toggle: "󰐥", run: "󰐊", open: "󰏌",
   pause: g(0xF03E4), playPause: g(0xF040E), stop: g(0xF04DB), next: g(0xF04AD), prev: g(0xF04AE),
   up: g(0xF0143), down: g(0xF0140), heat: g(0xF0238), cool: g(0xF0717), auto: g(0xF006A),
-  fan: g(0xF0210), dry: g(0xF058E), power: "󰐥", shield: g(0xF0483), shieldOff: g(0xF099E),
+  fan: g(0xF0210), dry: g(0xF058E), volume: g(0xF057E), muted: g(0xF0581), power: "󰐥", shield: g(0xF0483), shieldOff: g(0xF099E),
   speed: g(0xF04C5), flask: g(0xF0668), rss: g(0xF046B), search: "󰍉", refresh: "󰑐", check: g(0xF012C), cross: g(0xF0156)
 }
 
@@ -306,11 +306,16 @@ function clampNum(v, lo, hi) {
   return Math.max(lo, Math.min(hi, n))
 }
 
+function allowed(d, kind, value) {
+  return typeof value === "string" && arr(d.modes && d.modes[kind]).indexOf(value) >= 0
+}
+
 function homeAssistantAction(actionId, d, value) {
   var id = d.entityId || ""
   if (!ENTITY_RE.test(id)) return null
   var domain = id.split(".")[0]
   var target = { entity_id: id }
+  var call = function(svc, extra) { return haCall(domain, svc, Object.assign(extra || {}, target)) }
   var v
   switch (actionId) {
   case "toggle": {
@@ -319,29 +324,78 @@ function homeAssistantAction(actionId, d, value) {
   }
   case "bright":
     if (domain !== "light" || (v = clampNum(value, 0, 100)) === null) return null
-    return v === 0 ? haCall("light", "turn_off", target) : haCall("light", "turn_on", Object.assign({ brightness_pct: Math.round(v) }, target))
+    return v === 0 ? call("turn_off") : call("turn_on", { brightness_pct: Math.round(v) })
+  case "ct": {
+    var ct = arr(d.ct)
+    if (domain !== "light" || ct.length !== 2 || (v = clampNum(value, ct[0], ct[1])) === null) return null
+    return call("turn_on", { color_temp_kelvin: Math.round(v) })
+  }
+  case "rgb":
+    if (domain !== "light" || !Array.isArray(value) || value.length !== 3) return null
+    var rgb = value.map(function(c) { return clampNum(c, 0, 255) })
+    if (rgb.some(function(c) { return c === null })) return null
+    return call("turn_on", { rgb_color: rgb.map(Math.round) })
   case "fanpct":
     if (domain !== "fan" || (v = clampNum(value, 0, 100)) === null) return null
-    return haCall("fan", "set_percentage", Object.assign({ percentage: Math.round(v) }, target))
-  case "coverOpen": return domain === "cover" ? haCall("cover", "open_cover", target) : null
-  case "coverClose": return domain === "cover" ? haCall("cover", "close_cover", target) : null
-  case "coverStop": return domain === "cover" ? haCall("cover", "stop_cover", target) : null
+    return call("set_percentage", { percentage: Math.round(v) })
+  case "osc":
+    if (domain !== "fan" || (value !== "on" && value !== "off")) return null
+    return call("oscillate", { oscillating: value === "on" })
+  case "direction":
+    if (domain !== "fan" || !allowed(d, "direction", value)) return null
+    return call("set_direction", { direction: value })
+  case "preset":
+    if ((domain !== "fan" && domain !== "climate") || !allowed(d, "preset", value)) return null
+    return call("set_preset_mode", { preset_mode: value })
+  case "fanMode":
+    if (domain !== "climate" || !allowed(d, "fanMode", value)) return null
+    return call("set_fan_mode", { fan_mode: value })
+  case "humMode":
+    if (domain !== "humidifier" || !allowed(d, "humMode", value)) return null
+    return call("set_mode", { mode: value })
+  case "hum":
+    if ((domain !== "humidifier" && domain !== "climate") || (v = clampNum(value, 0, 100)) === null) return null
+    return call("set_humidity", { humidity: Math.round(v) })
+  case "option":
+    if ((domain !== "select" && domain !== "input_select") || !allowed(d, "option", value)) return null
+    return call("select_option", { option: value })
+  case "number": {
+    var nr = arr(d.number)
+    if ((domain !== "number" && domain !== "input_number") || nr.length !== 2 || (v = clampNum(value, nr[0], nr[1])) === null) return null
+    return call("set_value", { value: v })
+  }
+  case "source":
+    if (domain !== "media_player" || !allowed(d, "source", value)) return null
+    return call("select_source", { source: value })
+  case "mute": return domain === "media_player" ? call("volume_mute", { is_volume_muted: !d.muted }) : null
+  case "autoRun": return domain === "automation" ? call("trigger", { skip_condition: false }) : null
+  case "coverOpen": return domain === "cover" ? call("open_cover") : null
+  case "coverClose": return domain === "cover" ? call("close_cover") : null
+  case "coverStop": return domain === "cover" ? call("stop_cover") : null
   case "coverPos":
     if (domain !== "cover" || (v = clampNum(value, 0, 100)) === null) return null
-    return haCall("cover", "set_cover_position", Object.assign({ position: Math.round(v) }, target))
+    return call("set_cover_position", { position: Math.round(v) })
   case "temp":
     if (domain !== "climate" || (v = clampNum(value, -50, 100)) === null) return null
-    return haCall("climate", "set_temperature", Object.assign({ temperature: Math.round(v * 10) / 10 }, target))
-  case "mpPrev": return domain === "media_player" ? haCall("media_player", "media_previous_track", target) : null
-  case "mpPlay": return domain === "media_player" ? haCall("media_player", "media_play_pause", target) : null
-  case "mpNext": return domain === "media_player" ? haCall("media_player", "media_next_track", target) : null
-  case "mpPower": return domain === "media_player" ? haCall("media_player", "toggle", target) : null
+    return call("set_temperature", { temperature: Math.round(v * 10) / 10 })
+  case "tempLow":
+  case "tempHigh": {
+    var r = arr(d.range)
+    if (domain !== "climate" || r.length !== 2 || (v = clampNum(value, -50, 100)) === null) return null
+    var lo = actionId === "tempLow" ? v : r[0], hi = actionId === "tempHigh" ? v : r[1]
+    if (lo > hi) return null
+    return call("set_temperature", { target_temp_low: Math.round(lo * 10) / 10, target_temp_high: Math.round(hi * 10) / 10 })
+  }
+  case "mpPrev": return domain === "media_player" ? call("media_previous_track") : null
+  case "mpPlay": return domain === "media_player" ? call("media_play_pause") : null
+  case "mpNext": return domain === "media_player" ? call("media_next_track") : null
+  case "mpPower": return domain === "media_player" ? call("toggle") : null
   case "vol":
     if (domain !== "media_player" || (v = clampNum(value, 0, 100)) === null) return null
-    return haCall("media_player", "volume_set", Object.assign({ volume_level: Math.round(v) / 100 }, target))
+    return call("volume_set", { volume_level: Math.round(v) / 100 })
   }
   var m = /^hvac:([a-z_]{1,20})$/.exec(actionId)
-  if (m && domain === "climate") return haCall("climate", "set_hvac_mode", Object.assign({ hvac_mode: m[1] }, target))
+  if (m && domain === "climate" && allowed(d, "hvac", m[1])) return call("set_hvac_mode", { hvac_mode: m[1] })
   return null
 }
 
@@ -548,17 +602,25 @@ function parseJellyfin(results, t, fmt, service) {
 var HA_SERVICE = {
   light: ["light", "toggle"], switch: ["switch", "toggle"], fan: ["fan", "toggle"],
   input_boolean: ["input_boolean", "toggle"], automation: ["automation", "toggle"],
+  humidifier: ["humidifier", "toggle"],
   scene: ["scene", "turn_on"], script: ["script", "turn_on"],
   button: ["button", "press"], input_button: ["input_button", "press"],
   media_player: ["media_player", "toggle"]
 }
 // Shown without an explicit entity list, in this order.
-var HA_DEFAULT_DOMAINS = ["light", "switch", "fan", "cover", "climate", "media_player", "input_boolean", "sensor", "binary_sensor", "scene", "script"]
-var HA_SENSOR_CLASSES = { temperature: 1, humidity: 1, power: 1 }
+var HA_DEFAULT_DOMAINS = ["light", "switch", "fan", "cover", "climate", "humidifier", "media_player", "input_boolean",
+                          "sensor", "binary_sensor", "scene", "script", "automation"]
+var HA_SENSOR_CLASSES = { temperature: 1, humidity: 1, power: 1, aqi: 1, pm25: 1, carbon_dioxide: 1 }
 var HA_BINARY_CLASSES = { door: 1, window: 1, opening: 1, motion: 1, garage_door: 1 }
 // Sections that stay per domain: they rarely belong to a room.
 var HA_GLOBAL_DOMAINS = { scene: 1, script: 1, automation: 1, button: 1, input_button: 1, input_boolean: 1 }
 var HVAC_ICON = { off: ICON.power, heat: ICON.heat, cool: ICON.cool, heat_cool: ICON.auto, auto: ICON.auto, fan_only: ICON.fan, dry: ICON.dry }
+// One-click colors, as in Omahome. Whites are RGB approximations.
+var RGB_PRESETS = [
+  [255, 0, 0], [255, 128, 0], [255, 255, 0], [0, 255, 0], [0, 255, 255], [0, 0, 255], [128, 0, 255], [255, 64, 160],
+  [255, 197, 143], [255, 255, 255], [201, 226, 255], [128, 255, 191], [192, 160, 255], [255, 180, 128]
+]
+var RGB_MODES = { rgb: 1, rgbw: 1, rgbww: 1, hs: 1, xy: 1 }
 
 function haDefault(st) {
   var domain = st.entity_id.split(".")[0]
@@ -569,10 +631,20 @@ function haDefault(st) {
   return true
 }
 
+function strList(v, max) {
+  return arr(v).filter(function(x) { return typeof x === "string" && x.length > 0 && x.length <= 64 }).slice(0, max || 12)
+}
+
+// A row of text choices: { id, label, options: [{ value, label, active }] }.
+function choice(id, label, values, current, word) {
+  return { id: id, label: label, options: values.map(function(v) { return { value: v, label: word ? word(v) : v, active: v === current } }) }
+}
+
 function haItem(e, t, fmt) {
   var domain = e.entity_id.split(".")[0]
   var a = e.attributes || {}
   var on = e.state === "on"
+  var features = Model.num(a.supported_features)
   var unit = a.unit_of_measurement ? " " + a.unit_of_measurement : ""
   var item = {
     id: e.entity_id,
@@ -582,52 +654,96 @@ function haItem(e, t, fmt) {
     progress: -1,
     on: undefined,
     activate: "",
-    data: { entityId: e.entity_id },
-    actions: []
+    data: { entityId: e.entity_id, modes: {} },
+    actions: [],
+    sliders: [],
+    choices: []
   }
   var stateWord = function(s) { var k = "ha.state." + s; return t(k) !== k ? t(k) : s }
+  var modeWord = function(s) { var k = "ha.mode." + s; return t(k) !== k ? t(k) : String(s).replace(/_/g, " ") }
+  var addChoice = function(id, label, values, current, word) {
+    if (values.length === 0) return
+    item.data.modes[id] = values
+    item.choices.push(choice(id, label, values, current, word || modeWord))
+  }
   switch (domain) {
   case "light":
   case "switch":
   case "fan":
   case "input_boolean":
-  case "automation": {
+  case "automation":
+  case "humidifier": {
     item.on = on
     item.activate = "toggle"
     item.meta = stateWord(e.state)
-    item.actions.push({ id: "toggle", icon: ICON.toggle, tooltip: t("ha.toggle"), active: on })
-    if (domain === "light" && on && a.brightness !== undefined && a.brightness !== null) {
-      var pct = Math.round(Model.num(a.brightness) / 255 * 100)
-      item.slider = { id: "bright", value: pct, min: 0, max: 100, step: 1, unit: " %", label: t("ha.brightness") }
-    } else if (domain === "light" && !on && (a.supported_color_modes || []).some(function(m) { return m !== "onoff" })) {
-      item.slider = { id: "bright", value: 0, min: 0, max: 100, step: 1, unit: " %", label: t("ha.brightness") }
+    if (domain === "automation") item.actions.push({ id: "autoRun", icon: ICON.run, tooltip: t("ha.runAutomation") })
+    item.actions.push({ id: "toggle", icon: ICON.toggle, tooltip: t(domain === "automation" ? "ha.enableAutomation" : "ha.toggle"), active: on })
+    if (domain === "light") {
+      var cmodes = arr(a.supported_color_modes)
+      var dimmable = cmodes.some(function(m) { return m !== "onoff" && m !== "unknown" })
+      if (dimmable)
+        item.sliders.push({ id: "bright", value: on ? Math.round(Model.num(a.brightness) / 255 * 100) : 0, min: 0, max: 100, step: 1, unit: " %", label: t("ha.brightness") })
+      if (cmodes.indexOf("color_temp") >= 0) {
+        var kmin = Model.num(a.min_color_temp_kelvin) || 2000, kmax = Model.num(a.max_color_temp_kelvin) || 6500
+        item.data.ct = [kmin, kmax]
+        item.sliders.push({ id: "ct", value: Model.num(a.color_temp_kelvin) || Math.round((kmin + kmax) / 2), min: kmin, max: kmax, step: 50, unit: " K", label: t("ha.colorTemp"), gradient: "kelvin" })
+      }
+      if (cmodes.some(function(m) { return RGB_MODES[m] })) {
+        var cur = arr(a.rgb_color).length === 3 ? a.rgb_color.map(Model.num) : null
+        item.rgb = { current: on ? cur : null, presets: RGB_PRESETS }
+        if (on && cur) item.swatch = cur
+      }
     }
-    if (domain === "fan" && a.percentage !== undefined && a.percentage !== null) {
-      item.slider = { id: "fanpct", value: Model.num(a.percentage), min: 0, max: 100, step: Math.max(1, Model.num(a.percentage_step) || 1), unit: " %", label: t("ha.speed") }
+    if (domain === "fan") {
+      if (features & 1)
+        item.sliders.push({ id: "fanpct", value: Model.num(a.percentage), min: 0, max: 100, step: Math.max(1, Model.num(a.percentage_step) || 1), unit: " %", label: t("ha.speed") })
+      if (features & 8) addChoice("preset", t("ha.preset"), strList(a.preset_modes), a.preset_mode)
+      if (features & 2) addChoice("osc", t("ha.oscillation"), ["on", "off"], a.oscillating ? "on" : "off", stateWord)
+      if (features & 4) addChoice("direction", t("ha.direction"), ["forward", "reverse"], a.direction)
+    }
+    if (domain === "humidifier") {
+      if (a.humidity !== undefined && a.humidity !== null)
+        item.sliders.push({ id: "hum", value: Model.num(a.humidity), min: Model.num(a.min_humidity) || 0, max: Model.num(a.max_humidity) || 100, step: 1, unit: " %", label: t("ha.targetHumidity") })
+      if (a.current_humidity !== undefined) item.subtitle = fmt(Model.num(a.current_humidity), 0) + " %"
+      if (features & 1) addChoice("humMode", t("ha.mode"), strList(a.available_modes), a.mode)
     }
     break
   }
   case "cover": {
     item.meta = stateWord(e.state)
-    item.actions.push({ id: "coverOpen", icon: ICON.up, tooltip: t("ha.open") })
-    item.actions.push({ id: "coverStop", icon: ICON.stop, tooltip: t("ha.stop") })
-    item.actions.push({ id: "coverClose", icon: ICON.down, tooltip: t("ha.close") })
+    if (!features || features & 1) item.actions.push({ id: "coverOpen", icon: ICON.up, tooltip: t("ha.open") })
+    if (!features || features & 8) item.actions.push({ id: "coverStop", icon: ICON.stop, tooltip: t("ha.stop") })
+    if (!features || features & 2) item.actions.push({ id: "coverClose", icon: ICON.down, tooltip: t("ha.close") })
     if (a.current_position !== undefined)
-      item.slider = { id: "coverPos", value: Model.num(a.current_position), min: 0, max: 100, step: 1, unit: " %", label: t("ha.position") }
+      item.sliders.push({ id: "coverPos", value: Model.num(a.current_position), min: 0, max: 100, step: 1, unit: " %", label: t("ha.position") })
     break
   }
   case "climate": {
-    var cur = a.current_temperature !== undefined && a.current_temperature !== null ? fmt(Model.num(a.current_temperature), 1) + " °" : ""
+    var curT = a.current_temperature !== undefined && a.current_temperature !== null ? fmt(Model.num(a.current_temperature), 1) + " °" : ""
     var target = a.temperature !== undefined && a.temperature !== null ? Model.num(a.temperature) : null
-    item.meta = [cur, target !== null ? "→ " + fmt(target, 1) + " °" : ""].filter(Boolean).join(" ")
-    item.subtitle = [stateWord(e.state), a.hvac_action ? stateWord(a.hvac_action) : ""].filter(Boolean).join(" · ")
-    var modes = (a.hvac_modes || []).filter(function(m) { return HVAC_ICON[m] }).slice(0, 5)
+    var range = a.target_temp_low !== undefined && a.target_temp_low !== null && a.target_temp_high !== undefined && a.target_temp_high !== null
+    var tgt = target !== null ? "→ " + fmt(target, 1) + " °" : range ? "→ " + fmt(Model.num(a.target_temp_low), 1) + "–" + fmt(Model.num(a.target_temp_high), 1) + " °" : ""
+    item.meta = [curT, tgt].filter(Boolean).join(" ")
+    item.subtitle = [stateWord(e.state), a.hvac_action ? stateWord(a.hvac_action) : "",
+                     a.current_humidity !== undefined && a.current_humidity !== null ? fmt(Model.num(a.current_humidity), 0) + " %" : ""].filter(Boolean).join(" · ")
+    var modes = strList(a.hvac_modes).filter(function(m) { return HVAC_ICON[m] }).slice(0, 6)
+    item.data.modes.hvac = modes
     for (var i = 0; i < modes.length; i++)
       item.actions.push({ id: "hvac:" + modes[i], icon: HVAC_ICON[modes[i]], tooltip: stateWord(modes[i]), active: e.state === modes[i] })
+    var step = Model.num(a.target_temp_step) || (a.temperature_unit === "°F" ? 1 : 0.5)
+    var tmin = Model.num(a.min_temp) || 7, tmax = Model.num(a.max_temp) || 35
+    var dec = step < 1 ? 1 : 0
     if (target !== null) {
-      var step = Model.num(a.target_temp_step) || (a.temperature_unit === "°F" ? 1 : 0.5)
-      item.slider = { id: "temp", value: target, min: Model.num(a.min_temp) || 7, max: Model.num(a.max_temp) || 35, step: step, unit: " °", label: t("ha.target"), decimals: step < 1 ? 1 : 0 }
+      item.sliders.push({ id: "temp", value: target, min: tmin, max: tmax, step: step, unit: " °", label: t("ha.target"), decimals: dec })
+    } else if (range) {
+      item.data.range = [Model.num(a.target_temp_low), Model.num(a.target_temp_high)]
+      item.sliders.push({ id: "tempLow", value: Model.num(a.target_temp_low), min: tmin, max: tmax, step: step, unit: " °", label: t("ha.targetLow"), decimals: dec })
+      item.sliders.push({ id: "tempHigh", value: Model.num(a.target_temp_high), min: tmin, max: tmax, step: step, unit: " °", label: t("ha.targetHigh"), decimals: dec })
     }
+    if (features & 4 && a.humidity !== undefined && a.humidity !== null)
+      item.sliders.push({ id: "hum", value: Model.num(a.humidity), min: Model.num(a.min_humidity) || 0, max: Model.num(a.max_humidity) || 100, step: 1, unit: " %", label: t("ha.targetHumidity") })
+    if (features & 16) addChoice("preset", t("ha.preset"), strList(a.preset_modes), a.preset_mode)
+    if (features & 8) addChoice("fanMode", t("ha.fanMode"), strList(a.fan_modes), a.fan_mode)
     break
   }
   case "media_player": {
@@ -640,12 +756,31 @@ function haItem(e, t, fmt) {
       item.actions.push({ id: "mpPrev", icon: ICON.prev, tooltip: t("ha.previous") })
       item.actions.push({ id: "mpPlay", icon: playing ? ICON.pause : ICON.play, tooltip: t(playing ? "ha.pause" : "ha.play") })
       item.actions.push({ id: "mpNext", icon: ICON.next, tooltip: t("ha.next") })
+      if (features & 8 || a.is_volume_muted !== undefined) {
+        item.data.muted = !!a.is_volume_muted
+        item.actions.push({ id: "mute", icon: a.is_volume_muted ? ICON.muted : ICON.volume, tooltip: t(a.is_volume_muted ? "ha.unmute" : "ha.mute"), active: !!a.is_volume_muted })
+      }
       if (a.volume_level !== undefined)
-        item.slider = { id: "vol", value: Math.round(Model.num(a.volume_level) * 100), min: 0, max: 100, step: 1, unit: " %", label: t("ha.volume") }
+        item.sliders.push({ id: "vol", value: Math.round(Model.num(a.volume_level) * 100), min: 0, max: 100, step: 1, unit: " %", label: t("ha.volume") })
+      if (arr(a.source_list).length > 0) addChoice("source", t("ha.source"), strList(a.source_list, 10), a.source, function(v) { return v })
     }
     item.actions.push({ id: "mpPower", icon: ICON.power, tooltip: t("ha.power"), active: !idle })
     break
   }
+  case "select":
+  case "input_select":
+    item.meta = Model.clip(e.state, 30)
+    addChoice("option", t("ha.option"), strList(a.options, 12), e.state, function(v) { return v })
+    break
+  case "number":
+  case "input_number":
+    if (a.min !== undefined && a.max !== undefined && isFinite(Number(e.state))) {
+      var nstep = Model.num(a.step) || 1
+      item.data.number = [Model.num(a.min), Model.num(a.max)]
+      item.sliders.push({ id: "number", value: Number(e.state), min: Model.num(a.min), max: Model.num(a.max), step: nstep, unit: unit, label: "", decimals: nstep < 1 ? 1 : 0 })
+      item.meta = ""
+    }
+    break
   case "scene":
   case "script":
   case "button":
@@ -661,6 +796,8 @@ function haItem(e, t, fmt) {
   default:
     if (unit !== "" && isFinite(Number(e.state))) item.meta = fmt(Number(e.state), Number(e.state) % 1 === 0 ? 0 : 1) + unit
   }
+  // First slider stays on the row; the rest, colors and choices fold away.
+  item.expandable = item.sliders.length > 1 || item.choices.length > 0 || !!item.rgb
   return item
 }
 

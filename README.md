@@ -30,10 +30,12 @@ your homelab hosts over plain SSH: nothing to install on the server.
   `podman`.
 - **Services**: pick a service from a dropdown to see and drive it:
   - **Home Assistant**: entities grouped by room (Home Assistant areas),
-    search across every entity, lights with a brightness slider, switches,
-    fans with speed, covers (open, stop, close, position), thermostats
-    (target temperature and mode), media players (play/pause, previous,
-    next, volume), temperature, humidity, door and motion sensors, scenes
+    search across every entity, lights with brightness, white temperature,
+    one-click colors and a custom RGB picker, switches, fans with speed,
+    presets, oscillation and direction, humidifiers, covers (open, stop, close, position), thermostats
+    (target temperature or heat/cool range, mode, presets, fan mode), media
+    players (play/pause, previous, next, volume, mute, source), automations
+    (run or enable), select and number entities through search, temperature, humidity, door and motion sensors, scenes
     and scripts.
   - **Jellyfin**: library counts, who is watching what (with poster,
     progress and transcoding) with pause and stop, recently added items,

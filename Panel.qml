@@ -1143,7 +1143,7 @@ Panel {
         fontFamily: root.fontFamily
         enabled: !svc.isLoading
         opacity: svc.isLoading ? 0.4 : 1
-        onClicked: svc.refresh()
+        onClicked: svc.refresh(true)
       }
       PanelActionButton {
         iconText: "󰌆"
@@ -1431,7 +1431,9 @@ Panel {
     property var item: null
     readonly property bool busy: item !== null && svc.service !== null && svc.busyAction.indexOf(svc.service.key + "|") === 0
                                  && svc.busyAction.slice(svc.busyAction.length - item.id.length - 1) === "|" + item.id
-    readonly property var slider: item && item.slider ? item.slider : null
+    readonly property var sliders: item && item.sliders ? item.sliders : (item && item.slider ? [item.slider] : [])
+    readonly property bool expanded: item !== null && item.expandable === true && svc.isExpanded(item)
+    readonly property var swatch: item && item.swatch ? item.swatch : null
 
     foreground: root.foreground
     hasCursor: itemMouse.containsMouse
@@ -1458,7 +1460,7 @@ Panel {
       Image {
         id: poster
         visible: source != "" && status === Image.Ready
-        Layout.alignment: Qt.AlignVCenter
+        Layout.alignment: Qt.AlignTop
         Layout.preferredWidth: Style.space(30)
         Layout.preferredHeight: Style.space(44)
         source: itemRow.item && itemRow.item.image ? itemRow.item.image : ""
@@ -1468,13 +1470,16 @@ Panel {
         cache: true
       }
 
+      // State dot; a lit RGB light shows its color.
       Rectangle {
         visible: !poster.visible && itemRow.item !== null && itemRow.item.on !== undefined
-        Layout.alignment: Qt.AlignVCenter
-        width: Style.space(8)
+        Layout.alignment: Qt.AlignTop
+        Layout.topMargin: Style.space(5)
+        width: itemRow.swatch ? Style.space(10) : Style.space(8)
         height: width
         radius: width / 2
-        color: itemRow.item && itemRow.item.on ? root.foreground : "transparent"
+        color: itemRow.swatch ? Qt.rgba(itemRow.swatch[0] / 255, itemRow.swatch[1] / 255, itemRow.swatch[2] / 255, 1)
+             : itemRow.item && itemRow.item.on ? root.foreground : "transparent"
         border.width: 1
         border.color: root.foreground
       }
@@ -1521,28 +1526,161 @@ Panel {
             opacity: 0.8
           }
         }
-        RowLayout {
-          visible: itemRow.slider !== null
-          Layout.fillWidth: true
-          spacing: Style.space(6)
-          PanelSlider {
-            id: itemSlider
+
+        // Sliders: the first one always, the others once unfolded.
+        Repeater {
+          model: itemRow.expanded ? itemRow.sliders : itemRow.sliders.slice(0, 1)
+          ServiceSlider {
+            required property var modelData
             Layout.fillWidth: true
-            bar: root.bar
-            minimum: itemRow.slider ? itemRow.slider.min : 0
-            maximum: itemRow.slider ? itemRow.slider.max : 1
-            step: itemRow.slider ? itemRow.slider.step : 1
-            integer: itemRow.slider ? itemRow.slider.step >= 1 : true
-            value: itemRow.slider ? itemRow.slider.value : 0
-            enabled: svc.busyAction === ""
-            onReleased: function(v) { if (itemRow.slider) svc.runAction(itemRow.slider.id, itemRow.item, v) }
+            spec: modelData
+            showLabel: itemRow.expanded && itemRow.sliders.length > 1
+            onCommitted: function(v) { svc.runAction(modelData.id, itemRow.item, v) }
           }
-          PlainText {
-            Layout.minimumWidth: Style.space(44)
-            horizontalAlignment: Text.AlignRight
-            color: root.dim
-            font.pixelSize: Style.font.caption
-            text: itemRow.slider ? root.fmt(itemSlider.liveValue, itemRow.slider.decimals || 0) + itemRow.slider.unit : ""
+        }
+
+        // Colors (RGB lights)
+        ColumnLayout {
+          visible: itemRow.expanded && itemRow.item !== null && !!itemRow.item.rgb
+          Layout.fillWidth: true
+          Layout.topMargin: Style.space(4)
+          spacing: Style.space(6)
+
+          RowLayout {
+            Layout.fillWidth: true
+            PlainText {
+              Layout.fillWidth: true
+              text: strings.t("ha.colors")
+              color: root.dim
+              font.pixelSize: Style.font.caption
+            }
+            PanelActionButton {
+              iconText: "󰏘"
+              tooltipText: strings.t("ha.customColor")
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              bordered: svc.rgbDraft(itemRow.item) !== null
+              onClicked: {
+                var cur = itemRow.item.rgb.current || [255, 255, 255]
+                svc.setRgbDraft(itemRow.item, svc.rgbDraft(itemRow.item) ? null : cur.slice())
+              }
+            }
+          }
+
+          Flow {
+            Layout.fillWidth: true
+            spacing: Style.space(6)
+            Repeater {
+              model: itemRow.item && itemRow.item.rgb ? itemRow.item.rgb.presets : []
+              Rectangle {
+                id: swatchCell
+                required property var modelData
+                readonly property var cur: itemRow.item.rgb.current
+                readonly property bool selected: cur !== null && cur[0] === modelData[0] && cur[1] === modelData[1] && cur[2] === modelData[2]
+                width: Style.space(22)
+                height: width
+                radius: Style.cornerRadius > 0 ? width / 2 : 0
+                color: Qt.rgba(modelData[0] / 255, modelData[1] / 255, modelData[2] / 255, 1)
+                border.width: selected || swatchMouse.containsMouse ? 2 : 1
+                border.color: selected || swatchMouse.containsMouse ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
+                MouseArea {
+                  id: swatchMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  enabled: svc.busyAction === ""
+                  onClicked: { svc.setRgbDraft(itemRow.item, null); svc.runAction("rgb", itemRow.item, swatchCell.modelData) }
+                }
+              }
+            }
+          }
+
+          // Custom color: red, green and blue sliders with a preview.
+          ColumnLayout {
+            id: rgbEditor
+            readonly property var draft: svc.rgbDraft(itemRow.item)
+            visible: draft !== null
+            Layout.fillWidth: true
+            spacing: Style.space(4)
+            Repeater {
+              model: [{ label: "R", i: 0 }, { label: "G", i: 1 }, { label: "B", i: 2 }]
+              ServiceSlider {
+                required property var modelData
+                Layout.fillWidth: true
+                spec: ({ id: "rgb" + modelData.i, value: rgbEditor.draft ? rgbEditor.draft[modelData.i] : 0, min: 0, max: 255, step: 1, unit: "", label: modelData.label })
+                showLabel: true
+                onCommitted: function(v) {
+                  var d = (rgbEditor.draft || [255, 255, 255]).slice()
+                  d[modelData.i] = Math.round(v)
+                  svc.setRgbDraft(itemRow.item, d)
+                }
+              }
+            }
+            RowLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(8)
+              Rectangle {
+                Layout.preferredWidth: Style.space(44)
+                Layout.preferredHeight: Style.space(22)
+                radius: Style.cornerRadius
+                color: rgbEditor.draft ? Qt.rgba(rgbEditor.draft[0] / 255, rgbEditor.draft[1] / 255, rgbEditor.draft[2] / 255, 1) : "transparent"
+                border.width: 1
+                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.3)
+              }
+              PlainText {
+                Layout.fillWidth: true
+                color: root.dim
+                font.pixelSize: Style.font.caption
+                text: rgbEditor.draft ? rgbEditor.draft.join(", ") : ""
+              }
+              Button {
+                text: strings.t("ha.applyColor")
+                iconText: "󰄬"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                bordered: true
+                enabled: svc.busyAction === ""
+                onClicked: { var d = rgbEditor.draft; svc.setRgbDraft(itemRow.item, null); svc.runAction("rgb", itemRow.item, d) }
+              }
+            }
+          }
+        }
+
+        // Text choices: presets, fan modes, sources, select options…
+        Repeater {
+          model: itemRow.expanded && itemRow.item && itemRow.item.choices ? itemRow.item.choices : []
+          ColumnLayout {
+            id: choiceGroup
+            required property var modelData
+            Layout.fillWidth: true
+            Layout.topMargin: Style.space(4)
+            spacing: Style.space(4)
+            PlainText {
+              visible: text !== ""
+              text: choiceGroup.modelData.label
+              color: root.dim
+              font.pixelSize: Style.font.caption
+            }
+            Flow {
+              Layout.fillWidth: true
+              spacing: Style.space(4)
+              Repeater {
+                model: choiceGroup.modelData.options
+                Button {
+                  required property var modelData
+                  text: modelData.label
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  verticalPadding: Style.space(3)
+                  horizontalPadding: Style.space(8)
+                  selected: modelData.active
+                  bordered: modelData.active
+                  enabled: svc.busyAction === "" && !modelData.active
+                  onClicked: svc.runAction(choiceGroup.modelData.id, itemRow.item, modelData.value)
+                }
+              }
+            }
           }
         }
       }
@@ -1551,6 +1689,7 @@ Panel {
         model: itemRow.item ? itemRow.item.actions : []
         PanelActionButton {
           required property var modelData
+          Layout.alignment: Qt.AlignTop
           iconText: modelData.icon
           tooltipText: modelData.tooltip
           foreground: root.foreground
@@ -1560,6 +1699,52 @@ Panel {
           onClicked: svc.runAction(modelData.id, itemRow.item)
         }
       }
+      PanelActionButton {
+        visible: itemRow.item !== null && itemRow.item.expandable === true
+        Layout.alignment: Qt.AlignTop
+        iconText: itemRow.expanded ? "󰅃" : "󰅀"
+        tooltipText: strings.t(itemRow.expanded ? "ha.less" : "ha.more")
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: svc.toggleExpanded(itemRow.item)
+      }
+    }
+  }
+
+  // Slider with an optional label and its live value; holds refreshes while dragged.
+  component ServiceSlider: RowLayout {
+    id: ss
+    property var spec: null
+    property bool showLabel: false
+    signal committed(real value)
+    spacing: Style.space(6)
+    PlainText {
+      visible: ss.showLabel && ss.spec !== null && ss.spec.label !== ""
+      Layout.preferredWidth: Style.space(72)
+      text: ss.spec ? ss.spec.label : ""
+      color: root.dim
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideRight
+    }
+    PanelSlider {
+      id: ssSlider
+      Layout.fillWidth: true
+      bar: root.bar
+      minimum: ss.spec ? ss.spec.min : 0
+      maximum: ss.spec ? ss.spec.max : 1
+      step: ss.spec ? ss.spec.step : 1
+      integer: ss.spec ? ss.spec.step >= 1 : true
+      value: ss.spec ? ss.spec.value : 0
+      enabled: svc.busyAction === ""
+      onDraggingChanged: if (dragging) svc.hold()
+      onReleased: function(v) { ss.committed(v) }
+    }
+    PlainText {
+      Layout.minimumWidth: Style.space(52)
+      horizontalAlignment: Text.AlignRight
+      color: root.dim
+      font.pixelSize: Style.font.caption
+      text: ss.spec ? root.fmt(ssSlider.liveValue, ss.spec.decimals || 0) + ss.spec.unit : ""
     }
   }
 

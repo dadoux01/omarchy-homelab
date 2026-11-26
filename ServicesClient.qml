@@ -38,6 +38,18 @@ Item {
   property string notice: ""
   property bool noticeError: false
 
+  // UI state that must survive a refresh rebuilding the rows.
+  property var expanded: ({})          // "<service.key>|<item id>" -> true
+  property var rgbDrafts: ({})         // "<service.key>|<item id>" -> [r, g, b] while editing
+  property double holdUntil: 0         // no refresh while a control is in use
+
+  function uiKey(item) { return service && item ? service.key + "|" + item.id : "" }
+  function isExpanded(item) { return !!expanded[uiKey(item)] }
+  function toggleExpanded(item) { put("expanded", uiKey(item), isExpanded(item) ? undefined : true) }
+  function rgbDraft(item) { return rgbDrafts[uiKey(item)] || null }
+  function setRgbDraft(item, rgb) { put("rgbDrafts", uiKey(item), rgb || undefined); hold() }
+  function hold() { holdUntil = Date.now() + 20000 }
+
   readonly property var view: service ? (views[service.key] || null) : null
   readonly property bool isLoading: service ? !!loading[service.key] : false
   readonly property var catalog: service ? Services.CATALOG[service.id] : null
@@ -68,7 +80,7 @@ Item {
   function select(id) {
     selectedId = id
     notice = ""
-    refresh()
+    refresh(true)
   }
 
   // ---------- requests ----------
@@ -109,9 +121,10 @@ Item {
     p.running = true
   }
 
-  function refresh() {
+  function refresh(force) {
     var svc = service
     if (!svc || loading[svc.key]) return
+    if (!force && Date.now() < holdUntil) return
     var steps = Services.plan(svc)
     var results = {}
     var left = steps.length
@@ -137,6 +150,7 @@ Item {
     var spec = Services.actionRequest(svc, actionId, item, value)
     if (!spec) return
     busyAction = svc.key + "|" + actionId + "|" + (item ? item.id : "")
+    holdUntil = 0
     notice = ""
     request(svc, spec.method, spec.path, spec.body === undefined ? null : spec.body, function(res) {
       busyAction = ""
@@ -233,7 +247,7 @@ Item {
     notice = code === 0 ? translate("notice.saved") : Model.clip(err || ("exit " + code), 200)
     noticeTimer.restart()
     secretsFile.reload()
-    if (code === 0) Qt.callLater(function() { root.put("loading", svc.key, undefined); root.refresh() })
+    if (code === 0) Qt.callLater(function() { root.put("loading", svc.key, undefined); root.refresh(true) })
   }
 
   FileView {
@@ -256,7 +270,7 @@ Item {
   // ---------- timers ----------
 
   Timer { id: noticeTimer; interval: 4000; onTriggered: root.notice = "" }
-  Timer { id: followUp; interval: 800; onTriggered: root.refresh() }
+  Timer { id: followUp; interval: 800; onTriggered: root.refresh(true) }
   Timer {
     interval: root.refreshMs
     repeat: true
@@ -264,6 +278,6 @@ Item {
     onTriggered: root.refresh()
   }
 
-  onActiveChanged: if (active) refresh()
-  onServiceChanged: if (active && service && !views[service.key]) refresh()
+  onActiveChanged: if (active) refresh(true)
+  onServiceChanged: if (active && service && !views[service.key]) refresh(true)
 }

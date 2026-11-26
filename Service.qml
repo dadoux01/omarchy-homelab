@@ -237,6 +237,12 @@ Item {
     refresh()
   }
 
+  // A fetch for the previous host was still running when the host changed,
+  // so the new host's fetch was skipped: run it now instead of at the next tick.
+  function catchUp(finishedKey, fetch) {
+    if (host && host.key !== finishedKey) Qt.callLater(fetch)
+  }
+
   function refresh() {
     refreshMetrics()
     refreshDocker()
@@ -375,6 +381,7 @@ Item {
       } else {
         root.put("errorCache", hostKey, Model.clip(err || ("ssh exit " + code), 200))
       }
+      root.catchUp(hostKey, root.refreshMetrics)
     }
   }
 
@@ -395,6 +402,7 @@ Item {
       var parsed = Model.parseDocker(out)
       if (code !== 0 && parsed.error === "") parsed.error = "unreachable"
       root.put("dockerCache", hostKey, parsed)
+      root.catchUp(hostKey, root.refreshDocker)
     }
   }
 
@@ -463,6 +471,7 @@ Item {
       if (code !== 0 && parsed.error === "") parsed.error = code === 124 ? "unreachable" : "noaccess"
       root.put("pveCache", hostKey, parsed)
       root.loadingPve = false
+      root.catchUp(hostKey, root.refreshPve)
     }
   }
 

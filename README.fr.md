@@ -33,9 +33,13 @@ vos serveurs homelab en SSH : rien à installer sur le serveur.
   consulter et le piloter :
   - **Home Assistant** : entités regroupées par pièce (zones Home
     Assistant), recherche dans toutes les entités, lumières avec variateur,
-    interrupteurs, ventilateurs avec vitesse, volets (ouvrir, arrêter,
-    fermer, position), thermostats (consigne et mode), lecteurs multimédia
-    (lecture/pause, précédent, suivant, volume), capteurs de température,
+    température du blanc, couleurs en un clic et sélecteur RGB, interrupteurs,
+    ventilateurs avec vitesse, préréglages, oscillation et sens,
+    humidificateurs, volets (ouvrir, arrêter,
+    fermer, position), thermostats (consigne ou plage chaud/froid, mode, préréglages,
+    ventilation), lecteurs multimédia (lecture/pause, précédent, suivant,
+    volume, sourdine, source), automatisations (exécuter ou activer),
+    entités select et number via la recherche, capteurs de température,
     d'humidité, de porte et de mouvement, scènes et scripts.
   - **Jellyfin** : taille de la bibliothèque, qui regarde quoi (affiche,
     progression et transcodage) avec pause et arrêt, ajouts récents, tâches
