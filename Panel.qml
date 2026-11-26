@@ -21,6 +21,7 @@ Panel {
   readonly property string pluginDir: String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/+$/, "")
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
+  readonly property color accent: Commons.Color.accent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property var fmt: Commons.I18n.formatNumber
@@ -221,7 +222,7 @@ Panel {
     open: root.opened
     focusTarget: panel.loadedContent
     contentWidth: panel.fittedContentWidth(Style.space(470))
-    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(620))
+    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(760))
 
     content: PanelKeyCatcher {
       property alias panelFlick: panelFlick
@@ -418,92 +419,124 @@ Panel {
               width: parent.width
               spacing: Style.space(10)
 
-              Meter {
-                visible: monitoring.m && monitoring.m.cpu >= 0
-                label: strings.t("metric.cpu")
-                detail: monitoring.m ? strings.t("metric.cpuDetail").arg(monitoring.m.cpus).arg(monitoring.m.load.map(function(v) { return root.fmt(v, 2) }).join(" ")) : ""
-                ratio: monitoring.m ? monitoring.m.cpu / 100 : 0
-                value: monitoring.m ? root.fmt(monitoring.m.cpu, 0) + " %" : ""
-                tooltip: monitoring.m ? monitoring.m.cpuModel : ""
-              }
-
-              Meter {
-                visible: monitoring.m && monitoring.m.mem !== null
-                label: strings.t("metric.memory")
-                ratio: monitoring.m && monitoring.m.mem ? monitoring.m.mem.used / monitoring.m.mem.total : 0
-                value: monitoring.m && monitoring.m.mem ? Model.bytes(monitoring.m.mem.used, root.fmt) + " / " + Model.bytes(monitoring.m.mem.total, root.fmt) : ""
-              }
-
-              Meter {
-                visible: monitoring.m && monitoring.m.swap !== null
-                label: strings.t("metric.swap")
-                ratio: monitoring.m && monitoring.m.swap ? monitoring.m.swap.used / monitoring.m.swap.total : 0
-                value: monitoring.m && monitoring.m.swap ? Model.bytes(monitoring.m.swap.used, root.fmt) + " / " + Model.bytes(monitoring.m.swap.total, root.fmt) : ""
-              }
-
-              Repeater {
-                model: monitoring.m ? monitoring.m.gpus : []
-                Meter {
-                  required property var modelData
-                  label: strings.t("metric.gpu")
-                  tooltip: modelData.name
-                  detail: (modelData.memTotal > 0 ? strings.t("metric.vram").arg(Model.bytes(modelData.memUsed, root.fmt)).arg(Model.bytes(modelData.memTotal, root.fmt)) : "")
-                        + (modelData.temp >= 0 ? "  ·  " + root.fmt(modelData.temp, 0) + " °C" : "")
-                  ratio: modelData.util / 100
-                  value: root.fmt(modelData.util, 0) + " %"
-                }
-              }
-
-              PanelSectionHeader {
-                visible: monitoring.m && monitoring.m.disks.length > 0
-                text: strings.t("section.storage")
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-              }
-
-              Repeater {
-                model: monitoring.m ? monitoring.m.disks : []
-                Meter {
-                  required property var modelData
-                  label: modelData.mount
-                  ratio: modelData.used / modelData.total
-                  value: Model.bytes(modelData.used, root.fmt) + " / " + Model.bytes(modelData.total, root.fmt)
-                }
-              }
-
-              PanelSectionHeader {
-                visible: monitoring.m && monitoring.m.temps.length > 0
-                text: strings.t("section.sensors")
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-              }
-
-              Flow {
-                visible: monitoring.m && monitoring.m.temps.length > 0
+              // Overview: the three numbers people look at first.
+              RowLayout {
                 width: parent.width
                 spacing: Style.space(8)
+                StatTile {
+                  Layout.fillWidth: true
+                  Layout.fillHeight: true
+                  Layout.preferredWidth: 1
+                  icon: "󰻠"
+                  label: strings.t("metric.cpu")
+                  value: monitoring.m && monitoring.m.cpu >= 0 ? root.fmt(monitoring.m.cpu, 0) + " %" : "–"
+                  sub: monitoring.m ? strings.t("metric.threads").arg(monitoring.m.cpus) : ""
+                  ratio: monitoring.m && monitoring.m.cpu >= 0 ? monitoring.m.cpu / 100 : -1
+                  tooltip: monitoring.m ? monitoring.m.cpuModel : ""
+                }
+                StatTile {
+                  Layout.fillWidth: true
+                  Layout.fillHeight: true
+                  Layout.preferredWidth: 1
+                  icon: "󰍛"
+                  label: strings.t("metric.memory")
+                  value: monitoring.m && monitoring.m.mem ? root.fmt(Model.percent(monitoring.m.mem.used, monitoring.m.mem.total), 0) + " %" : "–"
+                  sub: monitoring.m && monitoring.m.mem ? Model.bytesPair(monitoring.m.mem.used, monitoring.m.mem.total, root.fmt) : ""
+                  ratio: monitoring.m && monitoring.m.mem ? monitoring.m.mem.used / monitoring.m.mem.total : -1
+                }
+                StatTile {
+                  readonly property var hottest: monitoring.m && monitoring.m.temps.length > 0
+                      ? monitoring.m.temps.reduce(function(a, b) { return b.value > a.value ? b : a }) : null
+                  Layout.fillWidth: true
+                  Layout.fillHeight: true
+                  Layout.preferredWidth: 1
+                  icon: hottest ? "󰔏" : "󰅐"
+                  label: hottest ? strings.t("metric.hottest") : strings.t("metric.uptime")
+                  value: hottest ? root.fmt(hottest.value, 0) + " °C" : (monitoring.m ? Model.duration(monitoring.m.uptime) : "–")
+                  sub: hottest ? hottest.name : ""
+                  hot: hottest !== null && hottest.value >= 80
+                }
+              }
+
+              Card {
+                visible: monitoring.m !== null
+                title: strings.t("section.resources")
+                icon: "󰘚"
+                trailing: monitoring.m ? strings.t("metric.load").arg(monitoring.m.load.map(function(v) { return root.fmt(v, 2) }).join("  ")) : ""
+
+                Meter {
+                  visible: monitoring.m && monitoring.m.swap !== null
+                  label: strings.t("metric.swap")
+                  ratio: monitoring.m && monitoring.m.swap ? monitoring.m.swap.used / monitoring.m.swap.total : 0
+                  value: monitoring.m && monitoring.m.swap ? Model.bytesPair(monitoring.m.swap.used, monitoring.m.swap.total, root.fmt) : ""
+                }
                 Repeater {
-                  model: monitoring.m ? monitoring.m.temps : []
-                  Chip {
+                  model: monitoring.m ? monitoring.m.gpus : []
+                  Meter {
                     required property var modelData
-                    text: modelData.name + "  " + root.fmt(modelData.value, 0) + " °C"
-                    hot: modelData.value >= 80
+                    label: strings.t("metric.gpu")
+                    tooltip: modelData.name
+                    detail: (modelData.memTotal > 0 ? strings.t("metric.vram").arg(Model.bytes(modelData.memUsed, root.fmt)).arg(Model.bytes(modelData.memTotal, root.fmt)) : "")
+                          + (modelData.temp >= 0 ? "  ·  " + root.fmt(modelData.temp, 0) + " °C" : "")
+                    ratio: modelData.util / 100
+                    value: root.fmt(modelData.util, 0) + " %"
+                  }
+                }
+                InfoPair { visible: monitoring.m && monitoring.m.net !== null; label: strings.t("metric.network"); value: monitoring.m && monitoring.m.net ? "↓ " + Model.rate(monitoring.m.net.rx, root.fmt) + "   ↑ " + Model.rate(monitoring.m.net.tx, root.fmt) : "" }
+              }
+
+              Card {
+                visible: monitoring.m && monitoring.m.disks.length > 0
+                title: strings.t("section.storage")
+                icon: "󰋊"
+                trailing: monitoring.m ? strings.t("metric.disks").arg(monitoring.m.disks.length) : ""
+
+                Repeater {
+                  model: monitoring.m ? monitoring.m.disks : []
+                  Meter {
+                    required property var modelData
+                    label: modelData.mount
+                    ratio: modelData.used / modelData.total
+                    value: Model.bytesPair(modelData.used, modelData.total, root.fmt)
                   }
                 }
               }
 
-              PanelSectionHeader {
-                text: strings.t("section.system")
-                foreground: root.foreground
-                fontFamily: root.fontFamily
+              Card {
+                visible: monitoring.m && monitoring.m.temps.length > 1
+                title: strings.t("section.sensors")
+                icon: "󰔏"
+
+                Flow {
+                  width: parent.width
+                  spacing: Style.space(6)
+                  Repeater {
+                    model: monitoring.m ? monitoring.m.temps : []
+                    Chip {
+                      required property var modelData
+                      text: modelData.name + "  " + root.fmt(modelData.value, 0) + " °C"
+                      hot: modelData.value >= 80
+                    }
+                  }
+                }
               }
 
-              InfoPair { visible: monitoring.m && monitoring.m.net !== null; label: strings.t("metric.network"); value: monitoring.m && monitoring.m.net ? "↓ " + Model.rate(monitoring.m.net.rx, root.fmt) + "   ↑ " + Model.rate(monitoring.m.net.tx, root.fmt) : "" }
-              InfoPair { label: strings.t("metric.uptime"); value: monitoring.m ? Model.duration(monitoring.m.uptime) : "" }
-              InfoPair { visible: monitoring.m && monitoring.m.os !== ""; label: strings.t("metric.os"); value: monitoring.m ? monitoring.m.os : "" }
-              InfoPair { label: strings.t("metric.kernel"); value: monitoring.m ? monitoring.m.kernel : "" }
+              Card {
+                title: strings.t("section.system")
+                icon: "󰌢"
+                trailing: monitoring.m ? strings.t("metric.upFor").arg(Model.duration(monitoring.m.uptime)) : ""
 
-              PackagesSection { width: parent.width }
+                InfoPair { visible: monitoring.m && monitoring.m.os !== ""; label: strings.t("metric.os"); value: monitoring.m ? monitoring.m.os : "" }
+                InfoPair { label: strings.t("metric.kernel"); value: monitoring.m ? monitoring.m.kernel : "" }
+                InfoPair { visible: monitoring.m && monitoring.m.cpuModel !== ""; label: strings.t("metric.cpu"); value: monitoring.m ? monitoring.m.cpuModel : "" }
+              }
+
+              Card {
+                visible: root.watcher !== null
+                title: strings.t("packages.title")
+                icon: "󰏔"
+                PackagesSection { width: parent.width }
+              }
 
               PlainText {
                 visible: lab.hostError !== ""
@@ -747,6 +780,8 @@ Panel {
     elide: wrapMode === Text.NoWrap ? Text.ElideRight : Text.ElideNone
   }
 
+  // Label and value on one line, optional detail under the label, then a
+  // thin bar in the theme accent (urgent past 90 %).
   component Meter: Column {
     id: meter
     property string label: ""
@@ -758,44 +793,159 @@ Panel {
     readonly property color tint: clamped >= 0.9 ? root.urgent : root.foreground
 
     width: parent ? parent.width : 0
-    spacing: Style.space(4)
+    spacing: Style.space(5)
 
-    Row {
+    RowLayout {
       width: parent.width
       spacing: Style.space(8)
       PlainText {
-        id: meterLabel
-        width: parent.width - meterValue.implicitWidth - parent.spacing
-        text: meter.detail !== "" ? meter.label + "   " + meter.detail : meter.label
-        opacity: 0.8
+        Layout.fillWidth: true
+        text: meter.label
+        font.pixelSize: Style.font.body
       }
       PlainText {
-        id: meterValue
         text: meter.value
-        color: meter.tint
+        color: meter.clamped >= 0.9 ? root.urgent : root.foreground
+        font.pixelSize: Style.font.bodySmall
       }
     }
-
-    Rectangle {
+    PlainText {
+      visible: meter.detail !== ""
       width: parent.width
-      height: Style.space(6)
-      radius: height / 2
-      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-
-      Rectangle {
-        width: Math.max(height, parent.width * meter.clamped)
-        height: parent.height
-        radius: parent.radius
-        color: meter.tint
-        opacity: 0.85
-        Behavior on width { NumberAnimation { duration: Style.duration(220); easing.type: Easing.OutCubic } }
-      }
+      text: meter.detail
+      color: root.dim
+      font.pixelSize: Style.font.caption
     }
+
+    Bar { width: parent.width; ratio: meter.clamped; tint: meter.tint }
 
     HoverHandler { id: meterHover }
     PanelToolTip {
       visible: meter.tooltip !== "" && meterHover.hovered
       text: meter.tooltip
+      fontFamily: root.fontFamily
+    }
+  }
+
+  component Bar: Rectangle {
+    id: bar
+    property real ratio: 0
+    property color tint: root.foreground
+    height: Style.space(4)
+    radius: Style.cornerRadius > 0 ? height / 2 : 0
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+    Rectangle {
+      width: bar.ratio > 0 ? Math.max(bar.height, bar.width * Math.min(1, bar.ratio)) : 0
+      height: parent.height
+      radius: parent.radius
+      color: bar.tint
+      Behavior on width { NumberAnimation { duration: Style.duration(220); easing.type: Easing.OutCubic } }
+    }
+  }
+
+  // A grouped block on the shell's own control surface: same fill, border
+  // and corner radius as the theme's buttons, so it follows every theme.
+  component Card: BorderSurface {
+    id: card
+    default property alias content: cardBody.data
+    property string title: ""
+    property string icon: ""
+    property string trailing: ""
+    property color trailingColor: root.dim
+
+    width: parent ? parent.width : 0
+    implicitHeight: cardBody.implicitHeight + padding * 2
+    padding: Style.spacing.xxxl
+    color: Style.normalFillFor(root.foreground)
+    borderSpec: Border.controlSpec("normal", root.foreground, root.accent)
+    radius: Style.cornerRadius
+
+    Column {
+      id: cardBody
+      x: card.padding
+      y: card.padding
+      width: card.width - card.padding * 2
+      spacing: Style.space(10)
+
+      RowLayout {
+        visible: card.title !== ""
+        width: parent.width
+        spacing: Style.space(8)
+        PlainText {
+          visible: card.icon !== ""
+          text: card.icon
+          color: root.accent
+          font.pixelSize: Style.font.icon
+        }
+        PlainText {
+          Layout.fillWidth: true
+          text: card.title
+          font.pixelSize: Style.font.subtitle
+          font.bold: true
+        }
+        PlainText {
+          visible: card.trailing !== ""
+          text: card.trailing
+          color: card.trailingColor
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+  }
+
+  // One headline number with its label, a short detail and a bar.
+  component StatTile: BorderSurface {
+    id: tile
+    property string icon: ""
+    property string label: ""
+    property string value: ""
+    property string sub: ""
+    property string tooltip: ""
+    property real ratio: -1
+    property bool hot: ratio >= 0.9
+    implicitHeight: tileBody.implicitHeight + padding * 2
+    padding: Style.spacing.xxl
+    color: Style.normalFillFor(root.foreground)
+    borderSpec: Border.controlSpec("normal", root.foreground, root.accent)
+    radius: Style.cornerRadius
+
+    Column {
+      id: tileBody
+      x: tile.padding
+      y: tile.padding
+      width: tile.width - tile.padding * 2
+      spacing: Style.space(4)
+      RowLayout {
+        width: parent.width
+        spacing: Style.space(6)
+        PlainText { text: tile.icon; color: root.accent; font.pixelSize: Style.font.bodySmall }
+        PlainText { Layout.fillWidth: true; text: tile.label; color: root.dim; font.pixelSize: Style.font.caption }
+      }
+      PlainText {
+        width: parent.width
+        text: tile.value
+        color: tile.hot ? root.urgent : root.foreground
+        font.pixelSize: Style.font.display
+        font.bold: true
+      }
+      PlainText {
+        width: parent.width
+        text: tile.sub !== "" ? tile.sub : " "
+        color: root.dim
+        font.pixelSize: Style.font.caption
+      }
+      Bar {
+        visible: tile.ratio >= 0
+        width: parent.width
+        ratio: tile.ratio
+        tint: tile.hot ? root.urgent : root.foreground
+      }
+    }
+
+    HoverHandler { id: tileHover }
+    PanelToolTip {
+      visible: tile.tooltip !== "" && tileHover.hovered
+      text: tile.tooltip
       fontFamily: root.fontFamily
     }
   }
@@ -1803,12 +1953,6 @@ Panel {
 
     visible: w !== null
     spacing: Style.space(6)
-
-    PanelSectionHeader {
-      text: strings.t("packages.title")
-      foreground: root.foreground
-      fontFamily: root.fontFamily
-    }
 
     PlainText {
       width: parent.width

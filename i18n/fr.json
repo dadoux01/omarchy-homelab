@@ -269,5 +269,11 @@
   "pve.add.full": "Votre fichier d'hôtes compte déjà 16 hôtes, le maximum.",
   "pve.add.json": "Votre fichier d'hôtes n'est pas un JSON valide. Corrigez-le d'abord (e).",
   "host.sshKey": "Configurer la clé SSH",
-  "host.sshKeyHelp": "L'hôte refuse la connexion par clé. Ceci ouvre un terminal qui y installe votre clé SSH (demande son mot de passe une fois)."
+  "host.sshKeyHelp": "L'hôte refuse la connexion par clé. Ceci ouvre un terminal qui y installe votre clé SSH (demande son mot de passe une fois).",
+  "metric.threads": "%1 threads",
+  "metric.hottest": "Plus chaud",
+  "metric.load": "charge %1",
+  "metric.disks": "%1 montages",
+  "metric.upFor": "actif depuis %1",
+  "section.resources": "Ressources"
 }

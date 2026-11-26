@@ -269,5 +269,11 @@
   "pve.add.full": "Your hosts file already has 16 hosts, the maximum.",
   "pve.add.json": "Your hosts file is not valid JSON. Fix it first (e).",
   "host.sshKey": "Set up SSH key",
-  "host.sshKeyHelp": "The host refused key login. This opens a terminal that installs your SSH key on it (asks its password once)."
+  "host.sshKeyHelp": "The host refused key login. This opens a terminal that installs your SSH key on it (asks its password once).",
+  "metric.threads": "%1 threads",
+  "metric.hottest": "Hottest",
+  "metric.load": "load %1",
+  "metric.disks": "%1 mounts",
+  "metric.upFor": "up %1",
+  "section.resources": "Resources"
 }
