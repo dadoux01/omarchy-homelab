@@ -275,5 +275,7 @@
   "metric.load": "load %1",
   "metric.disks": "%1 mounts",
   "metric.upFor": "up %1",
-  "section.resources": "Resources"
+  "section.resources": "Resources",
+  "docker.updateShort": "update",
+  "pve.memory": "memory"
 }

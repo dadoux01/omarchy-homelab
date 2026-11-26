@@ -275,5 +275,7 @@
   "metric.load": "charge %1",
   "metric.disks": "%1 montages",
   "metric.upFor": "actif depuis %1",
-  "section.resources": "Ressources"
+  "section.resources": "Ressources",
+  "docker.updateShort": "mise à jour",
+  "pve.memory": "mémoire"
 }

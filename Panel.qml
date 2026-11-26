@@ -562,7 +562,7 @@ Panel {
             }
             visible: lab.host !== null && root.tab === "docker"
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(8)
 
             PlainText {
               visible: dockerTab.d === null || dockerTab.d.error !== "" || dockerTab.d.containers.length === 0
@@ -574,14 +574,56 @@ Panel {
                   : strings.t("docker.none")
             }
 
+            // Counts double as quick filters.
+            RowLayout {
+              readonly property int total: dockerTab.d ? dockerTab.d.containers.length : 0
+              readonly property int updates: dockerTab.d ? dockerTab.d.containers.filter(function(c) { return root.hasImageUpdate(c.name) }).length : 0
+              visible: total > 0
+              width: parent.width
+              spacing: Style.space(8)
+              StatTile {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
+                icon: "󰐊"
+                label: strings.t("docker.state.running")
+                value: dockerTab.running + " / " + parent.total
+                clickable: true
+                selected: root.dockerState === "running"
+                onClicked: root.dockerState = root.dockerState === "running" ? "all" : "running"
+              }
+              StatTile {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
+                icon: "󰓛"
+                label: strings.t("docker.state.stopped")
+                value: String(parent.total - dockerTab.running)
+                hot: false
+                clickable: true
+                selected: root.dockerState === "stopped"
+                onClicked: root.dockerState = root.dockerState === "stopped" ? "all" : "stopped"
+              }
+              StatTile {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
+                icon: "󰚰"
+                label: strings.t("docker.state.updates")
+                value: String(parent.updates)
+                clickable: true
+                selected: root.dockerState === "updates"
+                onClicked: root.dockerState = root.dockerState === "updates" ? "all" : "updates"
+              }
+            }
+
             PlainText {
-              visible: dockerTab.d !== null && dockerTab.d.containers.length > 0
+              visible: lab.loadingDocker || (dockerTab.d !== null && dockerTab.shown.length !== dockerTab.d.containers.length)
               width: parent.width
               color: root.dim
               font.pixelSize: Style.font.caption
-              text: strings.t("docker.summary").arg(dockerTab.running).arg(dockerTab.d ? dockerTab.d.containers.length : 0)
-                  + (dockerTab.d && dockerTab.shown.length !== dockerTab.d.containers.length ? "  ·  " + strings.t("docker.shown").arg(dockerTab.shown.length) : "")
-                  + (lab.loadingDocker ? "  ·  " + strings.t("loading") : "")
+              text: [dockerTab.d && dockerTab.shown.length !== dockerTab.d.containers.length ? strings.t("docker.shown").arg(dockerTab.shown.length) : "",
+                     lab.loadingDocker ? strings.t("loading") : ""].filter(function(x) { return x !== "" }).join("  ·  ")
             }
 
             // Search + filter button
@@ -737,7 +779,7 @@ Panel {
             id: linksTab
             visible: lab.host !== null && root.tab === "links"
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(8)
 
             PlainText {
               visible: lab.host !== null && lab.host.links.length === 0
@@ -867,35 +909,96 @@ Panel {
       width: card.width - card.padding * 2
       spacing: Style.space(10)
 
-      RowLayout {
+      SectionTitle {
         visible: card.title !== ""
         width: parent.width
-        spacing: Style.space(8)
-        PlainText {
-          visible: card.icon !== ""
-          text: card.icon
-          color: root.accent
-          font.pixelSize: Style.font.icon
-        }
-        PlainText {
-          Layout.fillWidth: true
-          text: card.title
-          font.pixelSize: Style.font.subtitle
-          font.bold: true
-        }
-        PlainText {
-          visible: card.trailing !== ""
-          text: card.trailing
-          color: card.trailingColor
-          font.pixelSize: Style.font.caption
-        }
+        title: card.title
+        icon: card.icon
+        trailing: card.trailing
+        trailingColor: card.trailingColor
       }
     }
   }
 
+  // Icon + bold title + right-hand note, as used on top of cards and lists.
+  component SectionTitle: RowLayout {
+    id: st
+    property string title: ""
+    property string icon: ""
+    property string trailing: ""
+    property color trailingColor: root.dim
+    width: parent ? parent.width : 0
+    spacing: Style.space(8)
+    PlainText {
+      visible: st.icon !== ""
+      text: st.icon
+      color: root.accent
+      font.pixelSize: Style.font.icon
+    }
+    PlainText {
+      Layout.fillWidth: true
+      text: st.title
+      font.pixelSize: Style.font.subtitle
+      font.bold: true
+    }
+    PlainText {
+      visible: st.trailing !== ""
+      text: st.trailing
+      color: st.trailingColor
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  // Small rounded label for a state ("update", "healthy", "stopped").
+  component StatusPill: Rectangle {
+    id: pill
+    property string text: ""
+    property color tint: root.foreground
+    implicitWidth: pillText.implicitWidth + Style.space(12)
+    implicitHeight: pillText.implicitHeight + Style.space(4)
+    radius: Style.cornerRadius > 0 ? height / 2 : 0
+    color: Qt.rgba(tint.r, tint.g, tint.b, 0.14)
+    PlainText {
+      id: pillText
+      anchors.centerIn: parent
+      text: pill.text
+      color: pill.tint
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  // A list entry drawn as its own small card; the hover state is the
+  // shell's own cursor fill and border.
+  component ItemCard: CursorSurface {
+    foreground: root.foreground
+    color: hasCursor ? fill : Style.normalFillFor(root.foreground)
+    borderSpec: Border.controlSpec(hasCursor ? "hover" : "normal", root.foreground, root.accent)
+  }
+
+  // Square glyph badge on the left of list entries.
+  component IconTile: Rectangle {
+    id: iconTile
+    property string glyph: ""
+    property color tint: root.foreground
+    implicitWidth: Style.space(32)
+    implicitHeight: implicitWidth
+    radius: Style.cornerRadius
+    color: Qt.rgba(tint.r, tint.g, tint.b, 0.10)
+    PlainText {
+      anchors.centerIn: parent
+      text: iconTile.glyph
+      color: iconTile.tint
+      font.pixelSize: Style.font.icon
+    }
+  }
+
   // One headline number with its label, a short detail and a bar.
+  // Clickable tiles act as filters.
   component StatTile: BorderSurface {
     id: tile
+    signal clicked()
+    property bool clickable: false
+    property bool selected: false
     property string icon: ""
     property string label: ""
     property string value: ""
@@ -905,9 +1008,16 @@ Panel {
     property bool hot: ratio >= 0.9
     implicitHeight: tileBody.implicitHeight + padding * 2
     padding: Style.spacing.xxl
-    color: Style.normalFillFor(root.foreground)
-    borderSpec: Border.controlSpec("normal", root.foreground, root.accent)
+    color: tile.selected ? Style.selectedFillFor(root.foreground, root.accent) : (tileHover.hovered && tile.clickable ? Style.hoverFillFor(root.foreground, root.accent) : Style.normalFillFor(root.foreground))
+    borderSpec: Border.controlSpec(tile.selected ? "selected" : (tileHover.hovered && tile.clickable ? "hover" : "normal"), root.foreground, root.accent)
     radius: Style.cornerRadius
+
+    MouseArea {
+      anchors.fill: parent
+      enabled: tile.clickable
+      cursorShape: Qt.PointingHandCursor
+      onClicked: tile.clicked()
+    }
 
     Column {
       id: tileBody
@@ -929,8 +1039,9 @@ Panel {
         font.bold: true
       }
       PlainText {
+        visible: tile.sub !== ""
         width: parent.width
-        text: tile.sub !== "" ? tile.sub : " "
+        text: tile.sub
         color: root.dim
         font.pixelSize: Style.font.caption
       }
@@ -1076,10 +1187,10 @@ Panel {
     }
 
     // Credentials form
-    Column {
+    Card {
       visible: sv.showForm
-      width: parent.width
-      spacing: Style.space(8)
+      title: strings.t("service.credentials")
+      icon: "󰌆"
 
       PlainText {
         width: parent.width
@@ -1176,14 +1287,21 @@ Panel {
         }
       }
 
-      Flow {
+      GridLayout {
+        visible: sv.vm !== null && sv.vm.stats.length > 0
         width: parent.width
-        spacing: Style.space(8)
+        columns: 3
+        columnSpacing: Style.space(8)
+        rowSpacing: Style.space(8)
         Repeater {
           model: sv.vm ? sv.vm.stats : []
-          Chip {
+          StatTile {
             required property var modelData
-            text: modelData.label + "  " + modelData.value
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.preferredWidth: 1
+            label: modelData.label
+            value: modelData.value
           }
         }
       }
@@ -1262,16 +1380,12 @@ Panel {
 
       Repeater {
         model: sv.vm ? sv.vm.sections : []
-        Column {
+        Card {
           required property var modelData
           width: sv.width
-          spacing: Style.space(4)
+          title: modelData.title
+          trailing: modelData.items.length > 0 ? String(modelData.items.length) : ""
 
-          PanelSectionHeader {
-            text: modelData.title
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
           PlainText {
             visible: modelData.items.length === 0
             width: parent.width
@@ -1282,7 +1396,7 @@ Panel {
             model: modelData.items
             ServiceItemRow {
               required property var modelData
-              width: sv.width
+              width: parent.width
               item: modelData
             }
           }
@@ -1539,13 +1653,42 @@ Panel {
       width: parent.width
       spacing: Style.space(8)
 
-      Flow {
+      // Counts; the VM and LXC tiles filter the list below.
+      RowLayout {
         width: parent.width
         spacing: Style.space(8)
-        Chip { text: strings.t("pve.nodes") + "  " + (px.ok ? px.p.nodes.filter(function(n) { return n.online }).length + " / " + px.p.nodes.length : "") }
-        Chip { text: strings.t("pve.vms") + "  " + px.vmsRunning + " / " + px.vms }
-        Chip { text: strings.t("pve.cts") + "  " + px.ctsRunning + " / " + px.cts }
-        Chip { visible: px.ok && px.p.failedTasks.length > 0; hot: true; text: strings.t("pve.failedTasks") + "  " + (px.ok ? px.p.failedTasks.length : 0) }
+        StatTile {
+          readonly property int online: px.ok ? px.p.nodes.filter(function(n) { return n.online }).length : 0
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          Layout.preferredWidth: 1
+          icon: "󰒋"
+          label: strings.t("pve.nodes")
+          value: online + " / " + (px.ok ? px.p.nodes.length : 0)
+          hot: px.ok && online < px.p.nodes.length
+        }
+        StatTile {
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          Layout.preferredWidth: 1
+          icon: "󰍹"
+          label: strings.t("pve.vms")
+          value: px.vmsRunning + " / " + px.vms
+          clickable: true
+          selected: root.pveKind === "qemu"
+          onClicked: root.pveKind = root.pveKind === "qemu" ? "all" : "qemu"
+        }
+        StatTile {
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          Layout.preferredWidth: 1
+          icon: "󰆧"
+          label: strings.t("pve.cts")
+          value: px.ctsRunning + " / " + px.cts
+          clickable: true
+          selected: root.pveKind === "lxc"
+          onClicked: root.pveKind = root.pveKind === "lxc" ? "all" : "lxc"
+        }
       }
 
       PlainText {
@@ -1557,19 +1700,21 @@ Panel {
         text: lab.pveActionError
       }
 
-      // Nodes
-      Repeater {
-        model: px.ok ? px.p.nodes : []
-        Meter {
-          required property var modelData
-          label: (modelData.online ? "" : "󰅚 ") + modelData.name
-          detail: modelData.online ? strings.t("pve.nodeDetail").arg(root.fmt(modelData.cpu * 100, 0)).arg(Model.duration(modelData.uptime)) : strings.t("pve.offline")
-          ratio: modelData.maxmem > 0 ? modelData.mem / modelData.maxmem : 0
-          value: Model.bytes(modelData.mem, root.fmt) + " / " + Model.bytes(modelData.maxmem, root.fmt)
+      Card {
+        title: strings.t("pve.nodes")
+        icon: "󰒋"
+        trailing: strings.t("pve.memory")
+        Repeater {
+          model: px.ok ? px.p.nodes : []
+          Meter {
+            required property var modelData
+            label: (modelData.online ? "" : "󰅚 ") + modelData.name
+            detail: modelData.online ? strings.t("pve.nodeDetail").arg(root.fmt(modelData.cpu * 100, 0)).arg(Model.duration(modelData.uptime)) : strings.t("pve.offline")
+            ratio: modelData.maxmem > 0 ? modelData.mem / modelData.maxmem : 0
+            value: Model.bytesPair(modelData.mem, modelData.maxmem, root.fmt)
+          }
         }
       }
-
-      PanelSeparator { foreground: root.foreground }
 
       // Guests: search + filters
       TextField {
@@ -1604,19 +1749,6 @@ Panel {
           focusable: false
           onChanged: function(v) { root.pveState = v }
         }
-        ButtonGroup {
-          options: [
-            { value: "all", label: strings.t("pve.kind.all") },
-            { value: "qemu", label: strings.t("pve.kind.qemu"), icon: "󰍹" },
-            { value: "lxc", label: strings.t("pve.kind.lxc"), icon: "󰆧" }
-          ]
-          value: root.pveKind
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          focusable: false
-          onChanged: function(v) { root.pveKind = v }
-        }
       }
 
       PlainText {
@@ -1645,56 +1777,54 @@ Panel {
         }
       }
 
-      // Storage
-      PanelSectionHeader {
+      Card {
         visible: px.ok && px.p.storages.length > 0
-        text: strings.t("section.storage")
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-      }
-      Repeater {
-        model: px.ok ? px.p.storages : []
-        Meter {
-          required property var modelData
-          label: modelData.storage
-          detail: (modelData.shared ? strings.t("pve.shared") : modelData.node) + (modelData.kind ? "  ·  " + modelData.kind : "")
-          ratio: modelData.used / modelData.total
-          value: Model.bytes(modelData.used, root.fmt) + " / " + Model.bytes(modelData.total, root.fmt)
+        title: strings.t("section.storage")
+        icon: "󰋊"
+        Repeater {
+          model: px.ok ? px.p.storages : []
+          Meter {
+            required property var modelData
+            label: modelData.storage
+            detail: (modelData.shared ? strings.t("pve.shared") : modelData.node) + (modelData.kind ? "  ·  " + modelData.kind : "")
+            ratio: modelData.used / modelData.total
+            value: Model.bytesPair(modelData.used, modelData.total, root.fmt)
+          }
         }
       }
 
-      // Failed tasks
-      PanelSectionHeader {
+      Card {
         visible: px.ok && px.p.failedTasks.length > 0
-        text: strings.t("pve.failedTasksTitle")
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-      }
-      Repeater {
-        model: px.ok ? px.p.failedTasks : []
-        Column {
-          required property var modelData
-          width: px.width
-          spacing: Style.space(1)
-          PlainText {
+        title: strings.t("pve.failedTasksTitle")
+        icon: "󰀦"
+        trailing: px.ok ? String(px.p.failedTasks.length) : ""
+        trailingColor: root.urgent
+        Repeater {
+          model: px.ok ? px.p.failedTasks : []
+          Column {
+            required property var modelData
             width: parent.width
-            color: modelData.type === "vzdump" ? root.urgent : root.foreground
-            text: (modelData.type === "vzdump" ? strings.t("pve.backup") : modelData.type) + (modelData.id ? "  ·  " + modelData.id : "") + "  ·  " + modelData.node
-          }
-          PlainText {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            maximumLineCount: 2
-            color: root.dim
-            font.pixelSize: Style.font.caption
-            text: modelData.status + "  ·  " + root.ago(modelData.endtime)
+            spacing: Style.space(2)
+            PlainText {
+              width: parent.width
+              color: modelData.type === "vzdump" ? root.urgent : root.foreground
+              text: (modelData.type === "vzdump" ? strings.t("pve.backup") : modelData.type) + (modelData.id ? "  ·  " + modelData.id : "") + "  ·  " + modelData.node
+            }
+            PlainText {
+              width: parent.width
+              wrapMode: Text.WordWrap
+              maximumLineCount: 2
+              color: root.dim
+              font.pixelSize: Style.font.caption
+              text: modelData.status + "  ·  " + root.ago(modelData.endtime)
+            }
           }
         }
       }
     }
   }
 
-  component GuestRow: CursorSurface {
+  component GuestRow: ItemCard {
     id: gr
     property var guest: null
     readonly property string key: guest ? guest.node + "/" + guest.type + "/" + guest.vmid : ""
@@ -1710,9 +1840,10 @@ Panel {
       lab.pveAction(guest, action)
     }
 
-    foreground: root.foreground
+    readonly property bool showActions: hasCursor || armed !== "" || busy || root.pveAddKey === key
+
     hasCursor: grHover.hovered
-    implicitHeight: grLayout.implicitHeight + Style.spacing.rowPaddingX
+    implicitHeight: grLayout.implicitHeight + Style.space(20)
     opacity: busy ? 0.5 : 1
     HoverHandler { id: grHover }
 
@@ -1721,20 +1852,19 @@ Panel {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(6)
-      spacing: Style.space(8)
+      anchors.leftMargin: Style.space(12)
+      anchors.rightMargin: Style.space(10)
+      spacing: Style.space(10)
 
-      PlainText {
+      IconTile {
         Layout.alignment: Qt.AlignTop
-        text: gr.guest && gr.guest.type === "lxc" ? "󰆧" : "󰍹"
-        font.pixelSize: Style.font.icon
-        opacity: gr.guest && gr.guest.running ? 1 : 0.45
+        glyph: gr.guest && gr.guest.type === "lxc" ? "󰆧" : "󰍹"
+        tint: gr.guest && gr.guest.running ? root.foreground : root.dim
       }
 
       ColumnLayout {
         Layout.fillWidth: true
-        spacing: Style.space(1)
+        spacing: Style.space(3)
         RowLayout {
           Layout.fillWidth: true
           spacing: Style.space(6)
@@ -1742,12 +1872,13 @@ Panel {
             Layout.fillWidth: true
             text: gr.guest ? gr.guest.name : ""
             font.pixelSize: Style.font.body
+            font.bold: true
             opacity: gr.guest && gr.guest.running ? 1 : 0.6
           }
-          PlainText {
+          StatusPill {
+            visible: !gr.showActions
             text: gr.guest ? "#" + gr.guest.vmid : ""
-            color: root.dim
-            font.pixelSize: Style.font.caption
+            tint: root.dim
           }
         }
         PlainText {
@@ -1770,17 +1901,29 @@ Panel {
           }
         }
         PlainText {
-          visible: text !== ""
+          visible: gr.armed !== ""
           Layout.fillWidth: true
-          color: root.dim
+          color: root.urgent
           font.pixelSize: Style.font.caption
-          text: gr.armed !== "" ? strings.t("pve.confirm." + gr.armed)
-              : gr.guest && gr.guest.tags.length ? gr.guest.tags.map(function(t) { return "#" + t }).join(" ") : ""
+          text: gr.armed !== "" ? strings.t("pve.confirm." + gr.armed) : ""
+        }
+        Flow {
+          visible: gr.armed === "" && gr.guest !== null && gr.guest.tags.length > 0
+          Layout.fillWidth: true
+          spacing: Style.space(4)
+          Repeater {
+            model: gr.guest ? gr.guest.tags : []
+            StatusPill {
+              required property var modelData
+              text: modelData
+              tint: root.foreground
+            }
+          }
         }
       }
 
       PanelActionButton {
-        visible: gr.guest !== null && !gr.guest.running
+        visible: gr.showActions && gr.guest !== null && !gr.guest.running
         iconText: "󰐊"
         tooltipText: strings.t("docker.start")
         foreground: root.foreground
@@ -1789,7 +1932,7 @@ Panel {
         onClicked: gr.act("start")
       }
       PanelActionButton {
-        visible: gr.guest !== null && gr.guest.running
+        visible: gr.showActions && gr.guest !== null && gr.guest.running
         iconText: gr.armed === "shutdown" ? "󰄬" : "󰐥"
         tooltipText: gr.armed === "shutdown" ? strings.t("pve.confirm.shutdown") : strings.t("pve.shutdown")
         foreground: root.foreground
@@ -1800,7 +1943,7 @@ Panel {
         onClicked: gr.act("shutdown")
       }
       PanelActionButton {
-        visible: gr.guest !== null && gr.guest.running
+        visible: gr.showActions && gr.guest !== null && gr.guest.running
         iconText: gr.armed === "reboot" ? "󰄬" : "󰜉"
         tooltipText: gr.armed === "reboot" ? strings.t("pve.confirm.reboot") : strings.t("docker.restart")
         foreground: root.foreground
@@ -1811,6 +1954,7 @@ Panel {
         onClicked: gr.act("reboot")
       }
       PanelActionButton {
+        visible: gr.showActions
         iconText: "󰆍"
         tooltipText: strings.t("pve.console")
         foreground: root.foreground
@@ -1819,7 +1963,7 @@ Panel {
       }
       PanelActionButton {
         readonly property int hostIndex: gr.guest ? lab.hostIndexForGuest(gr.guest) : -1
-        visible: gr.guest !== null && (hostIndex >= 0 || gr.guest.running)
+        visible: gr.showActions && gr.guest !== null && (hostIndex >= 0 || gr.guest.running)
         iconText: hostIndex >= 0 ? "󰁔" : "󰐕"
         tooltipText: hostIndex >= 0 ? strings.t("pve.openHost") : strings.t("pve.addHost")
         foreground: root.foreground
@@ -2088,17 +2232,20 @@ Panel {
     }
 
     // Alerts
-    PanelSectionHeader {
+    SectionTitle {
       visible: av.w !== null
-      text: strings.t("alerts.title")
-      foreground: root.foreground
-      fontFamily: root.fontFamily
+      title: strings.t("alerts.title")
+      icon: "󰀦"
+      trailing: av.w && av.w.alerts.length > 0 ? String(av.w.alerts.length) : ""
+      trailingColor: av.w && av.w.hasErrors ? root.urgent : root.dim
     }
-    PlainText {
+    Card {
       visible: av.w !== null && av.w.alerts.length === 0
-      width: parent.width
-      color: root.dim
-      text: "󰄬  " + strings.t("alerts.none")
+      PlainText {
+        width: parent.width
+        color: root.dim
+        text: "󰄬  " + strings.t("alerts.none")
+      }
     }
     Repeater {
       model: av.w ? av.w.alerts : []
@@ -2109,18 +2256,18 @@ Panel {
       }
     }
 
-    PanelSeparator { visible: av.w !== null; foreground: root.foreground }
+    Item { width: 1; height: Style.space(6) }
 
     // Updates
     RowLayout {
       visible: av.w !== null
       width: parent.width
       spacing: Style.space(6)
-      PanelSectionHeader {
+      SectionTitle {
         Layout.fillWidth: true
-        text: strings.t("updates.title")
-        foreground: root.foreground
-        fontFamily: root.fontFamily
+        title: strings.t("updates.title")
+        icon: "󰚰"
+        trailing: av.w && av.w.updateList.length > 0 ? String(av.w.updateList.length) : ""
       }
       Button {
         text: av.w && av.w.checkingUpdates ? strings.t("updates.checking") : strings.t("updates.check")
@@ -2160,11 +2307,13 @@ Panel {
       text: counts.limited > 0 ? strings.t("updates.rateLimited").arg(counts.limited).arg(counts.errors)
                                : strings.t("updates.unchecked").arg(counts.errors)
     }
-    PlainText {
+    Card {
       visible: av.w !== null && av.w.updateList.length === 0 && av.lastCheck > 0
-      width: parent.width
-      color: root.dim
-      text: "󰄬  " + strings.t("updates.none")
+      PlainText {
+        width: parent.width
+        color: root.dim
+        text: "󰄬  " + strings.t("updates.none")
+      }
     }
     Button {
       visible: av.imageUpdates.length > 1
@@ -2189,14 +2338,13 @@ Panel {
     }
   }
 
-  component AlertRow: CursorSurface {
+  component AlertRow: ItemCard {
     id: alertRow
     property var alert: null
     readonly property color tint: alert && alert.level === "error" ? root.urgent : root.foreground
 
-    foreground: root.foreground
     hasCursor: alertMouse.containsMouse
-    implicitHeight: alertLayout.implicitHeight + Style.spacing.rowPaddingX
+    implicitHeight: alertLayout.implicitHeight + Style.space(20)
 
     MouseArea {
       id: alertMouse
@@ -2211,24 +2359,24 @@ Panel {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(6)
+      anchors.leftMargin: Style.space(12)
+      anchors.rightMargin: Style.space(10)
       spacing: Style.space(10)
 
-      PlainText {
+      IconTile {
         Layout.alignment: Qt.AlignTop
-        text: !alertRow.alert ? "" : alertRow.alert.level === "error" ? "󰅚" : alertRow.alert.level === "warning" ? "󰀦" : "󰋽"
-        color: alertRow.tint
-        font.pixelSize: Style.font.icon
+        glyph: !alertRow.alert ? "" : alertRow.alert.level === "error" ? "󰅚" : alertRow.alert.level === "warning" ? "󰀦" : "󰋽"
+        tint: alertRow.tint
       }
       ColumnLayout {
         Layout.fillWidth: true
-        spacing: Style.space(1)
+        spacing: Style.space(3)
         PlainText {
           Layout.fillWidth: true
           text: alertRow.alert ? alertRow.alert.title : ""
           color: alertRow.tint
           font.pixelSize: Style.font.body
+          font.bold: true
           wrapMode: Text.WordWrap
         }
         PlainText {
@@ -2247,6 +2395,7 @@ Panel {
         }
       }
       PanelActionButton {
+        visible: alertRow.hasCursor
         iconText: "󰅖"
         tooltipText: strings.t("alerts.dismiss")
         foreground: root.foreground
@@ -2256,7 +2405,7 @@ Panel {
     }
   }
 
-  component UpdateRow: CursorSurface {
+  component UpdateRow: ItemCard {
     id: upRow
     property var update: null
     readonly property var host: update ? root.hostByKey(update.hostKey) : null
@@ -2267,9 +2416,8 @@ Panel {
     property bool armed: false
     Timer { id: upDisarm; interval: 3000; onTriggered: upRow.armed = false }
 
-    foreground: root.foreground
     hasCursor: upHover.hovered
-    implicitHeight: upLayout.implicitHeight + Style.spacing.rowPaddingX
+    implicitHeight: upLayout.implicitHeight + Style.space(20)
     HoverHandler { id: upHover }
 
     RowLayout {
@@ -2277,21 +2425,22 @@ Panel {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(6)
+      anchors.leftMargin: Style.space(12)
+      anchors.rightMargin: Style.space(10)
       spacing: Style.space(10)
 
-      PlainText {
+      IconTile {
         Layout.alignment: Qt.AlignTop
-        text: !upRow.update ? "" : upRow.update.kind === "os" ? "󰏗" : upRow.update.kind === "image" ? "󰡨" : "󰒓"
-        font.pixelSize: Style.font.icon
+        glyph: !upRow.update ? "" : upRow.update.kind === "os" ? "󰏗" : upRow.update.kind === "image" ? "󰡨" : "󰒓"
+        tint: root.accent
       }
       ColumnLayout {
         Layout.fillWidth: true
-        spacing: Style.space(1)
+        spacing: Style.space(3)
         PlainText {
           Layout.fillWidth: true
           font.pixelSize: Style.font.body
+          font.bold: true
           text: {
             var u = upRow.update
             if (!u) return ""
@@ -2364,7 +2513,7 @@ Panel {
     }
   }
 
-  component ContainerRow: CursorSurface {
+  component ContainerRow: ItemCard {
     id: row
     property var container: null
     readonly property bool running: container && container.state === "running"
@@ -2377,9 +2526,12 @@ Panel {
     property bool armed: false
     Timer { id: disarm; interval: 3000; onTriggered: row.armed = false }
 
-    foreground: root.foreground
+    readonly property bool troubled: container !== null && (/restarting|dead/.test(container.state) || /\(unhealthy\)/.test(container.status))
+    // Actions stay out of the way until the row is pointed at.
+    readonly property bool showActions: hasCursor || armed || busy || updating || queued
+
     hasCursor: rowHover.hovered
-    implicitHeight: rowLayout.implicitHeight + Style.spacing.rowPaddingX
+    implicitHeight: rowLayout.implicitHeight + Style.space(20)
 
     HoverHandler { id: rowHover }
 
@@ -2388,41 +2540,46 @@ Panel {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(6)
-      spacing: Style.space(8)
+      anchors.leftMargin: Style.space(12)
+      anchors.rightMargin: Style.space(10)
+      spacing: Style.space(10)
 
-      Rectangle {
-        Layout.alignment: Qt.AlignVCenter
-        width: Style.space(8)
-        height: width
-        radius: width / 2
-        color: row.running ? root.foreground : "transparent"
-        border.width: 1
-        border.color: row.container && /restarting|dead/.test(row.container.state) ? root.urgent : root.foreground
+      IconTile {
+        Layout.alignment: Qt.AlignTop
+        glyph: "󰡨"
+        tint: row.troubled ? root.urgent : root.foreground
         opacity: row.running ? 1 : 0.5
       }
 
       ColumnLayout {
         Layout.fillWidth: true
-        spacing: Style.space(1)
-        PlainText {
+        spacing: Style.space(3)
+        RowLayout {
           Layout.fillWidth: true
-          text: row.container ? row.container.name : ""
-          font.pixelSize: Style.font.body
-          opacity: row.running ? 1 : 0.6
+          spacing: Style.space(6)
+          PlainText {
+            Layout.fillWidth: true
+            text: row.container ? row.container.name : ""
+            font.pixelSize: Style.font.body
+            font.bold: true
+            opacity: row.running ? 1 : 0.6
+          }
+          StatusPill {
+            visible: !row.showActions && row.hasUpdate && row.updateResult === ""
+            text: "󰚰 " + strings.t("docker.updateShort")
+            tint: root.accent
+          }
         }
         PlainText {
           Layout.fillWidth: true
-          color: root.dim
+          color: row.troubled ? root.urgent : root.dim
           font.pixelSize: Style.font.caption
           text: {
             if (!row.container) return ""
             if (row.updating) return strings.t("docker.updating")
             if (row.queued) return strings.t("docker.updateQueued")
             var parts = [row.container.status]
-            if (row.hasUpdate && row.updateResult === "") parts.unshift("󰜷 " + strings.t("docker.updateAvailable"))
-            if (row.container.cpu !== "") parts.push(row.container.cpu)
+            if (row.container.cpu !== "") parts.push("CPU " + row.container.cpu)
             if (row.container.mem !== "") parts.push(row.container.mem)
             return parts.join("  ·  ")
           }
@@ -2461,6 +2618,8 @@ Panel {
       }
 
       PanelActionButton {
+        visible: row.showActions
+        Layout.alignment: Qt.AlignVCenter
         iconText: row.running ? "󰓛" : "󰐊"
         tooltipText: row.running ? strings.t("docker.stop") : strings.t("docker.start")
         foreground: root.foreground
@@ -2470,6 +2629,8 @@ Panel {
         onClicked: root.containerAction(row.running ? "stop" : "start", row.container.name)
       }
       PanelActionButton {
+        visible: row.showActions
+        Layout.alignment: Qt.AlignVCenter
         iconText: "󰜉"
         tooltipText: strings.t("docker.restart")
         foreground: root.foreground
@@ -2479,6 +2640,8 @@ Panel {
         onClicked: lab.containerAction("restart", row.container.name)
       }
       PanelActionButton {
+        visible: row.showActions
+        Layout.alignment: Qt.AlignVCenter
         iconText: row.armed ? "󰄬" : "󰇚"
         tooltipText: row.armed ? strings.t("docker.updateConfirm") : (row.hasUpdate ? strings.t("docker.updateAvailable") + " · " : "") + strings.t("docker.update")
         foreground: root.foreground
@@ -2495,6 +2658,8 @@ Panel {
         }
       }
       PanelActionButton {
+        visible: row.showActions
+        Layout.alignment: Qt.AlignVCenter
         iconText: "󰈙"
         tooltipText: strings.t("docker.logs")
         foreground: root.foreground
@@ -2504,13 +2669,12 @@ Panel {
     }
   }
 
-  component LinkRow: CursorSurface {
+  component LinkRow: ItemCard {
     id: linkRow
     property var link: null
 
-    foreground: root.foreground
     hasCursor: linkMouse.containsMouse
-    implicitHeight: linkLayout.implicitHeight + Style.spacing.rowPaddingX
+    implicitHeight: linkLayout.implicitHeight + Style.space(20)
 
     MouseArea {
       id: linkMouse
@@ -2525,22 +2689,23 @@ Panel {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(10)
+      anchors.leftMargin: Style.space(12)
+      anchors.rightMargin: Style.space(12)
       spacing: Style.space(10)
 
-      PlainText {
-        text: linkRow.link && linkRow.link.icon !== "" ? linkRow.link.icon : "󰖟"
-        font.pixelSize: Style.font.icon
+      IconTile {
+        glyph: linkRow.link && linkRow.link.icon !== "" ? linkRow.link.icon : "󰖟"
+        tint: root.accent
         Layout.alignment: Qt.AlignVCenter
       }
       ColumnLayout {
         Layout.fillWidth: true
-        spacing: Style.space(1)
+        spacing: Style.space(2)
         PlainText {
           Layout.fillWidth: true
           text: linkRow.link ? linkRow.link.name : ""
           font.pixelSize: Style.font.body
+          font.bold: true
         }
         PlainText {
           Layout.fillWidth: true
