@@ -163,7 +163,9 @@ if [[ $cmd == api ]]; then
     rc=$?
     [[ $code =~ ^[0-9]{3}$ ]] || code=000
   }
-  send() { if [[ $method == GET ]]; then call GET "$url"; else printf '%s' "$body" | call "$method" "$url"; fi; }
+  # Feed bodies through process substitution, not a pipe: call must run in
+  # this shell so $code and $rc survive.
+  send() { if [[ $method == GET ]]; then call GET "$url"; else call "$method" "$url" < <(printf '%s' "$body"); fi; }
 
   case $auth in
     apikey|bearer|mediabrowser)
@@ -217,7 +219,7 @@ if [[ $cmd == api ]]; then
       [[ -n $(field password) ]] || missing
       login() {
         headers=()
-        jq -c --arg id "$id" '{password: (.[$id].password // "")}' "$file" | call POST "$base/api/auth"
+        call POST "$base/api/auth" < <(jq -c --arg id "$id" '{password: (.[$id].password // "")}' "$file")
         [[ $code == 200 ]] || { echo "HTTP ${code/000/0}" >&2; exit 0; }
         sid=$(jq -r 'if .session.valid then (.session.sid // "none") else "" end' "$work/body" 2>/dev/null)
         [[ $sid =~ ^[A-Za-z0-9+/=]{1,256}$ ]] || { echo "HTTP 401" >&2; exit 0; }
@@ -242,8 +244,8 @@ if [[ $cmd == api ]]; then
       if [[ $code == 403 ]]; then
         user=$(field username)
         [[ -n $user ]] || missing
-        jq -r --arg id "$id" '.[$id] | "username=\(.username // "" | @uri)&password=\(.password // "" | @uri)"' "$file" \
-          | call POST "$base/api/v2/auth/login"
+        call POST "$base/api/v2/auth/login" \
+          < <(jq -r --arg id "$id" '.[$id] | "username=\(.username // "" | @uri)&password=\(.password // "" | @uri)"' "$file" | tr -d '\n')
         if [[ $code != 200 ]] || [[ $(head -c 16 "$work/body") != Ok.* ]]; then
           [[ $code == 000 ]] && echo "HTTP 0" >&2 || echo "HTTP 401" >&2
           exit 0
@@ -258,7 +260,7 @@ if [[ $cmd == api ]]; then
 
   head -c 8000000 "$work/body" 2>/dev/null
   echo "HTTP ${code/000/0}" >&2
-  exit "$rc"
+  exit "${rc:-1}"
 fi
 
 if [[ $cmd == notify ]]; then
