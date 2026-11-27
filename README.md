@@ -306,6 +306,13 @@ omarchy-shell dadoux01.homelab host "Homelab"      # name, key or 1-based index
 omarchy-shell dadoux01.homelab dockerFilter memory desc ""   # sort: name|created|cpu|memory
 ```
 
+## Credits
+
+The Home Assistant controls (RGB colors and presets, white temperature, fan,
+thermostat, humidifier and automation controls) and the card-based layout are
+inspired by [Omahome](https://github.com/Z1Z0R/Omahome) by Zizor, a native
+Home Assistant panel for Omarchy. Thanks also for the UI review.
+
 ## License
 
 MIT

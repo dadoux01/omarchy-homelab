@@ -325,6 +325,14 @@ omarchy-shell dadoux01.homelab host "Homelab"      # nom, clé ou index à parti
 omarchy-shell dadoux01.homelab dockerFilter memory desc ""   # tri : name|created|cpu|memory
 ```
 
+## Remerciements
+
+Les commandes Home Assistant (couleurs RGB et préréglages, température du
+blanc, ventilateurs, thermostats, humidificateurs et automatisations) et la
+mise en page en cartes s'inspirent d'[Omahome](https://github.com/Z1Z0R/Omahome)
+de Zizor, un panneau Home Assistant natif pour Omarchy. Merci aussi pour la
+relecture de l'interface.
+
 ## Licence
 
 MIT
