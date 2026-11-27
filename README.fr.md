@@ -4,6 +4,13 @@
 
 <p align="center"><img src="preview.png" alt="Panel Homelab : onglet Monitoring" width="420"></p>
 
+<p align="center">
+  <img src="docs/docker.png" alt="Onglet Docker" width="200">
+  <img src="docs/proxmox.png" alt="Onglet Proxmox" width="200">
+  <img src="docs/home-assistant.png" alt="Service Home Assistant avec couleurs RGB" width="200">
+  <img src="docs/qbittorrent.png" alt="Service qBittorrent" width="200">
+</p>
+
 Un widget de barre pour le shell d'[Omarchy](https://omarchy.org) qui surveille
 vos serveurs homelab en SSH : rien à installer sur le serveur.
 

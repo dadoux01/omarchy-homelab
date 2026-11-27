@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "dadoux01.homelab",
   "name": "Homelab",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "author": "dadoux01",
   "license": "MIT",
-  "description": "Homelab assistant over SSH: hardware monitoring, Proxmox VE (VMs, containers, storage, backups), Docker containers, services (Jellyfin, Home Assistant, Prowlarr, Navidrome), alerts with desktop notifications, image and package update checks, links and a one-click SSH terminal.",
+  "description": "Homelab assistant over SSH: hardware monitoring, Proxmox VE (VMs, containers, storage, backups), Docker containers, services (Home Assistant, Jellyfin, Navidrome, Sonarr, Radarr, Prowlarr, qBittorrent, Transmission, Pi-hole, AdGuard Home), alerts with desktop notifications, image and package update checks, links and a one-click SSH terminal.",
   "homepage": "https://github.com/dadoux01/omarchy-homelab",
   "kinds": [
     "service",
