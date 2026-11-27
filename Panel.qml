@@ -22,6 +22,15 @@ Panel {
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
   readonly property color accent: Commons.Color.accent
+  property bool sliderHeld: false      // a service slider is being dragged
+
+  // Wheel over a service slider scrolls the panel instead.
+  function scrollPanel(wheel) {
+    var f = panel.loadedContent ? panel.loadedContent.panelFlick : null
+    if (!f || !f.interactive) return
+    var dy = wheel.pixelDelta.y !== 0 ? wheel.pixelDelta.y : wheel.angleDelta.y / 120 * Style.space(48)
+    f.contentY = Math.max(0, Math.min(f.contentHeight - f.height, f.contentY - dy))
+  }
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property var fmt: Commons.I18n.formatNumber
@@ -255,7 +264,7 @@ Panel {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
-        interactive: contentHeight > height
+        interactive: contentHeight > height && !root.sliderHeld
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         Column {
@@ -1736,8 +1745,24 @@ Panel {
       integer: ss.spec ? ss.spec.step >= 1 : true
       value: ss.spec ? ss.spec.value : 0
       enabled: svc.busyAction === ""
-      onDraggingChanged: if (dragging) svc.hold()
+      onDraggingChanged: {
+        if (dragging) svc.hold()
+        root.sliderHeld = dragging
+      }
       onReleased: function(v) { ss.committed(v) }
+      // The panel scrolls in a Flickable: keep it from taking over a drag that
+      // drifts vertically, and let the wheel scroll the list instead of
+      // changing (and sending) the value.
+      Component.onCompleted: {
+        for (var i = 0; i < children.length; i++)
+          if (children[i].preventStealing !== undefined) children[i].preventStealing = true
+      }
+      Component.onDestruction: if (dragging) root.sliderHeld = false
+      MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.NoButton
+        onWheel: function(wheel) { root.scrollPanel(wheel) }
+      }
     }
     PlainText {
       Layout.minimumWidth: Style.space(52)
