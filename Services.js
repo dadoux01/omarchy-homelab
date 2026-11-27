@@ -159,16 +159,26 @@ function bracket(ip) {
 }
 
 // "0.0.0.0:8096->8096/tcp, [::]:8096->8096/tcp" -> base URL for the service.
+// The service's usual port wins; otherwise the first TCP port that is not
+// also published over UDP (those carry traffic: BitTorrent, DNS…), so a
+// qBittorrent web UI moved to 8081 is not mistaken for its 6881 peer port.
 function urlFromPorts(ports, defaultPort, host) {
-  var best = null
+  var best = null, fallback = null
   var parts = String(ports || "").split(",")
+  var udp = {}
+  for (var u = 0; u < parts.length; u++) {
+    var mu = /->(\d+)\/udp/.exec(parts[u])
+    if (mu) udp[mu[1]] = true
+  }
   for (var i = 0; i < parts.length; i++) {
     var m = /^\s*(.*):(\d+)->(\d+)\/tcp/.exec(parts[i])
     if (!m) continue
     var entry = { ip: m[1], hostPort: m[2], containerPort: parseInt(m[3], 10) }
     if (entry.containerPort === defaultPort) { best = entry; break }
-    if (!best) best = entry
+    if (!best && !udp[m[3]]) best = entry
+    if (!fallback) fallback = entry
   }
+  best = best || fallback
   var addr = hostAddress(host)
   if (!best) return "http://" + bracket(addr) + ":" + defaultPort
   var ip = best.ip.replace(/^\[|\]$/g, "")
